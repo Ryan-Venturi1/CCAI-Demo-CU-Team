@@ -57,15 +57,135 @@ function buildAcademicProfile(user, prefs = {}, roadmap = null) {
 // ============================================================================
 // PLAN / STEP VIEW  (spine + focused current step + live tools)
 // ============================================================================
+// ---- My Plan CSV (V2 roadmap model) ---------------------------------------
+// Import/export the plan as a flat CSV so students can edit it in a spreadsheet
+// and bring it back — the convenience the spreadsheet build had, on this UI.
+// Subtask lettering to mirror the spreadsheet: step 1 → 1a, 1b, 1c … (a-z, aa…).
+const planLetter = (n) => { let s = ""; n = Math.max(0, Math.floor(n)); do { s = String.fromCharCode(97 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0); return s; };
+const planCsvEsc = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+function planToCsv(roadmap, doneTasks) {
+  const rows = [["code", "title", "phase", "timeline", "objective", "gate", "status"]];
+  (roadmap.steps || []).forEach((s, i) => {
+    rows.push([i + 1, s.title, s.phase || "", s.estimate || "", s.objective || "", s.gate ? "gate" : "", s.status || ""]);
+    (s.subtasks || []).forEach((t, j) => {
+      const done = doneTasks && doneTasks.has(`${s.id}::${t}`);
+      rows.push([`${i + 1}${planLetter(j)}`, t, "", "", "", "", done ? "done" : "todo"]);
+    });
+  });
+  return rows.map(r => r.map(planCsvEsc).join(",")).join("\n");
+}
+function parsePlanCsv(text) {
+  const rows = []; let row = [], cell = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQ = false; } else cell += c; }
+    else if (c === '"') inQ = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(cell); cell = ""; if (row.some(x => x.trim())) rows.push(row); row = []; }
+    else cell += c;
+  }
+  row.push(cell); if (row.some(x => x.trim())) rows.push(row);
+  return rows;
+}
+function csvToRoadmap(text, base, stamp) {
+  const rows = parsePlanCsv(text); if (!rows.length) return null;
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const col = (n) => head.indexOf(n);
+  const ci = { code: col("code"), title: col("title"), phase: col("phase"), timeline: col("timeline"), objective: col("objective"), gate: col("gate"), status: col("status") };
+  if (ci.code < 0 || ci.title < 0) return null;
+  const steps = []; const done = new Set();
+  const g = (r, k) => ci[k] >= 0 ? (r[ci[k]] || "").trim() : "";
+  rows.slice(1).forEach(r => {
+    const code = (r[ci.code] || "").trim(); const title = (r[ci.title] || "").trim();
+    if (!code || !title) return;
+    if (/^\d+$/.test(code)) {
+      steps.push({ id: `csv-${stamp}-${steps.length}`, title, phase: g(r, "phase") || "Custom", icon: "Flag",
+        estimate: g(r, "timeline"), objective: g(r, "objective"), gate: /gate|true|1/i.test(g(r, "gate")),
+        status: g(r, "status") || "locked", subtasks: [], add: [], retire: [], custom: true });
+    } else if (steps.length) {
+      const s = steps[steps.length - 1]; s.subtasks.push(title);
+      if (/done/i.test(g(r, "status"))) done.add(`${s.id}::${title}`);
+    }
+  });
+  if (!steps.length) return null;
+  if (!steps.some(s => s.status === "current" || s.status === "redo")) {
+    const idx = steps.findIndex(s => s.status !== "done");
+    steps[idx >= 0 ? idx : 0].status = "current";
+  }
+  return { roadmap: { ...base, steps }, done };
+}
+
+// Inline "how to do this" walkthrough for one subtask — the AI writes concrete
+// mini-steps you can check off (ported from the spreadsheet's row expansion),
+// cached per subtask in localStorage. Degrades to an "ask your advisors" link.
+const PLAN_WT_KEY = "phd-plan-walkthrough-v1";
+function PlanHowTo({ roadmap, step, sub, code, onAsk }) {
+  const wtId = `${step.id}::${sub}`;
+  const readAll = () => { try { return JSON.parse(localStorage.getItem(PLAN_WT_KEY) || "{}"); } catch (e) { return {}; } };
+  const [entry, setEntry] = useS2(() => readAll()[wtId] || null);
+  const [busy, setBusy] = useS2(false);
+  const [err, setErr] = useS2("");
+  const save = (next) => { const m = readAll(); m[wtId] = next; try { localStorage.setItem(PLAN_WT_KEY, JSON.stringify(m)); } catch (e) {} setEntry(next); };
+  const authed = window.CoachAPI && window.CoachAPI.isAuthed && window.CoachAPI.isAuthed();
+  const gen = async () => {
+    if (!window.CoachAPI || !window.CoachAPI.planWalkthrough) { setErr("Sign in with the backend running for AI walkthroughs."); return; }
+    setBusy(true); setErr("");
+    try {
+      const res = await window.CoachAPI.planWalkthrough({
+        title: sub, section: step.title, objective: step.objective,
+        program: roadmap.program && roadmap.program.name,
+        field: roadmap.program && roadmap.program.name
+      });
+      save({ wt: res, checked: [] });
+    } catch (e) { setErr(e.message || "Couldn't reach the assistant — is the backend running?"); }
+    finally { setBusy(false); }
+  };
+  useE2(() => { if (!entry && authed) gen(); }, []);
+  const wt = entry && entry.wt;
+  const checked = new Set((entry && entry.checked) || []);
+  const toggle = (i) => { const n = new Set(checked); n.has(i) ? n.delete(i) : n.add(i); save({ ...entry, checked: [...n] }); };
+  const steps = (wt && wt.steps) || [];
+  const doneN = steps.filter((_, i) => checked.has(i)).length;
+  return (
+    <div className="howto">
+      {busy && !wt && <div className="howto-load"><Ico name="Loader" size={13} className="spin" /> Writing the how-to for {code}…</div>}
+      {err && <div className="howto-err"><Ico name="AlertTriangle" size={12} /> {err} {authed && <button className="btn sm" onClick={gen}>Retry</button>}</div>}
+      {!busy && !wt && !err && (
+        <button className="btn sm primary" onClick={gen}><Ico name="Sparkles" size={13} color="#fff" /> Show me how to do this</button>
+      )}
+      {wt && (
+        <>
+          {wt.overview && <p className="howto-overview">{wt.overview}</p>}
+          <div className="howto-h"><Ico name="ListChecks" size={12} /> How to do {code} · {doneN}/{steps.length}
+            <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={gen} disabled={busy} title="Rewrite the walkthrough"><Ico name={busy ? "Loader" : "RefreshCw"} size={12} className={busy ? "spin" : ""} /> Regenerate</button>
+          </div>
+          <div className="howto-steps">
+            {steps.map((st, i) => (
+              <button key={i} className={`howto-step ${checked.has(i) ? "done" : ""}`} onClick={() => toggle(i)}>
+                <span className="howto-cb">{checked.has(i) && <Ico name="Check" size={11} color="#fff" />}</span>
+                <span className="howto-step-t">{st.title || st.text || st}{st.detail ? <span className="howto-step-d">{st.detail}</span> : null}</span>
+              </button>
+            ))}
+          </div>
+          <button className="btn sm" onClick={() => onAsk && onAsk(`I'm a PhD student working on "${step.title}". Walk me through, step by step, how to: ${sub} Assume I'm new to this and give concrete first actions.`)}>
+            <Ico name="MessageCircle" size={13} /> Ask your advisors for more
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touchStep, onCelebrate, onOpenSos, onAsk, onNav, onOpenStep, skillsUnlocked = true }) {
   const [selected, setSelected] = useS2(() => {
     const c = roadmap.steps.findIndex(s => s.status === "current");
     return c >= 0 ? c : 0;
   });
   const [openTask, setOpenTask] = useS2(-1); // which sub-task's "how to" drawer is open
-  const [editPlan, setEditPlan] = useS2(false); // reorder / rename milestones
+  const [editPlan, setEditPlan] = useS2(false); // full inline editing of everything
   const [dragIdx, setDragIdx] = useS2(null);
   const [renameId, setRenameId] = useS2(null);
+  const csvRef = React.useRef(null);
 
   // Move a milestone from index `from` to index `to`, keeping the selection on it.
   const moveStep = (from, to) => {
@@ -79,21 +199,19 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
   const renameStep = (id, title) => setRoadmap({ ...roadmap, steps: roadmap.steps.map(s => s.id === id ? { ...s, title } : s) });
   const [taskEdit, setTaskEdit] = useS2(null);   // subtask index being renamed
   const [newTask, setNewTask] = useS2("");
-  const [toolPicker, setToolPicker] = useS2(false);
-  useE2(() => { setTaskEdit(null); setNewTask(""); setToolPicker(false); setOpenTask(-1); }, [selected]);
+  const [selectedSub, setSelectedSub] = useS2(null); // sub-milestone open in the sheet (null = major)
+  // Which milestones have their sub-milestones revealed in the spine (caret
+  // toggle, spreadsheet-style). Current/redo milestones start expanded.
+  const [spineOpen, setSpineOpen] = useS2(() => new Set(
+    roadmap.steps.filter(s => s.status === "current" || s.status === "redo").map(s => s.id)
+  ));
+  const toggleSpine = (id, e) => {
+    if (e) e.stopPropagation();
+    setSpineOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  };
+  useE2(() => { setTaskEdit(null); setNewTask(""); setOpenTask(-1); }, [selected]);
 
   const step = roadmap.steps[selected];
-  const fs = RE2.computeFeatureState(roadmap, selected);
-  // Per-step tool overrides layered on top of the engine's lifecycle:
-  // toolsAdd = user pinned it here, toolsRemove = user took it off this step.
-  const toolsAdd = step.toolsAdd || [];
-  const toolsRemove = step.toolsRemove || [];
-  const effActive = [
-    ...fs.active.filter(f => !toolsRemove.includes(f)),
-    ...toolsAdd.filter(f => !fs.active.includes(f) && !toolsRemove.includes(f))
-  ];
-  const liveTools = effActive.filter(f => window.hasTool(f));
-  const chipOnly = effActive.filter(f => !window.hasTool(f));
   const activeCount = roadmap.steps.filter(s => s.status === "current" || s.status === "redo").length;
 
   const patchStep = (patch) => setRoadmap({ ...roadmap, steps: roadmap.steps.map(s => s.id === step.id ? { ...s, ...patch } : s) });
@@ -106,6 +224,10 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
   const risks = RE2.risks ? RE2.risks(step.templateId || step.id) : [];
   const stuck = H.stallDays ? H.stallDays(roadmap, activity) : 0;
   const stepIsCurrentNow = step.status === "current" || step.status === "redo";
+  // Sub-milestone view (spreadsheet-style 2a/2b rows opened from the spine).
+  const subT = selectedSub != null ? step.subtasks[selectedSub] : null;
+  const subView = !editPlan && subT != null;
+  const subCode = subView ? `${stepNum}${planLetter(selectedSub)}` : "";
 
   const toggleTask = (t) => {
     setDoneTasks(prev => { const n = new Set(prev); const k = tkey(t); n.has(k) ? n.delete(k) : n.add(k); return n; });
@@ -125,7 +247,6 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
     const ni = res.roadmap.steps.findIndex(s => s.status === "current");
     if (ni >= 0) { touchStep && touchStep(res.roadmap.steps[ni].id); setSelected(ni); }
   };
-  // Parallel work: run this step alongside whatever else is in flight.
   const workAlso = (id) => { setRoadmap(RE2.addCurrent(roadmap, id).roadmap); touchStep && touchStep(id); };
   const stopHere = (id) => setRoadmap(RE2.stopCurrent(roadmap, id).roadmap);
 
@@ -149,47 +270,40 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
     setTaskEdit(null);
     if (!t || t === old || step.subtasks.includes(t)) return;
     setSubtasks(step.subtasks.map((x, j) => j === i ? t : x));
-    // carry the checked state over to the renamed task
     setDoneTasks(prev => {
       const n = new Set(prev);
       if (n.has(tkey(old))) { n.delete(tkey(old)); n.add(`${step.id}::${t}`); }
       return n;
     });
   };
-
-  // ---- Tool add / remove -----------------------------------------------------
-  const addTool = (f) => patchStep({
-    toolsAdd: toolsRemove.includes(f) ? toolsAdd : [...toolsAdd, f],
-    toolsRemove: toolsRemove.filter(x => x !== f)
-  });
-  const removeTool = (f) => patchStep(
-    toolsAdd.includes(f)
-      ? { toolsAdd: toolsAdd.filter(x => x !== f) }
-      : { toolsRemove: [...toolsRemove, f] }
-  );
+  const moveSub = (i, dir) => {
+    const j = i + dir; if (j < 0 || j >= step.subtasks.length) return;
+    const arr = step.subtasks.slice(); const [m] = arr.splice(i, 1); arr.splice(j, 0, m);
+    setSubtasks(arr);
+  };
 
   // ---- Add / remove plan sections -------------------------------------------
-  const addMilestone = () => {
-    const id = `custom-${Date.now()}`;
-    const base = roadmap.steps[selected];
-    const s = {
-      id, title: "New milestone", phase: base?.phase || "Custom", icon: "Flag",
-      estimate: "You set the pace", objective: "Describe what finishing this section looks like.",
-      status: "locked", subtasks: [], add: [], retire: [], custom: true
-    };
+  const makeMilestone = () => ({
+    id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    title: "New milestone", phase: step?.phase || "Custom", icon: "Flag",
+    estimate: "You set the pace", objective: "Describe what finishing this section looks like.",
+    status: "locked", subtasks: [], add: [], retire: [], custom: true
+  });
+  const addMilestoneAt = (index) => {
+    const s = makeMilestone();
     const steps = roadmap.steps.slice();
-    steps.splice(selected + 1, 0, s);
+    steps.splice(index, 0, s);
     setRoadmap({ ...roadmap, steps });
-    setSelected(selected + 1);
+    setSelected(index);
     setEditPlan(true);
-    setRenameId(id);
+    setRenameId(s.id);
   };
+  const addMilestone = () => addMilestoneAt(selected + 1);
   const removeStepById = (id) => {
     if (roadmap.steps.length <= 1) return;
     const victim = roadmap.steps.find(s => s.id === id);
     if (!victim || !confirm(`Remove "${victim.title}" from your plan?`)) return;
     let steps = roadmap.steps.filter(s => s.id !== id);
-    // never leave the plan with nothing in flight
     if (!steps.some(s => s.status === "current" || s.status === "redo")) {
       const idx = steps.findIndex(s => s.status !== "done");
       if (idx >= 0) steps = steps.map((s, i) => i === idx ? { ...s, status: "current" } : s);
@@ -198,26 +312,85 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
     setSelected(sel => Math.max(0, Math.min(sel, steps.length - 1)));
   };
 
+  // ---- CSV import / export ---------------------------------------------------
+  const exportCsv = () => {
+    const blob = new Blob([planToCsv(roadmap, doneTasks)], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `my-plan-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+  const importCsv = (e) => {
+    const file = e.target.files && e.target.files[0]; if (e.target) e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = csvToRoadmap(String(reader.result || ""), roadmap, Date.now());
+      if (!parsed) { alert("Couldn't read that CSV. It needs a header row with at least: code, title (plus optional phase, timeline, objective, gate, status). Tip: export first to see the format."); return; }
+      if (!confirm("Replace your current plan with this CSV? Your progress checkmarks come from the file's status column.")) return;
+      setRoadmap(parsed.roadmap);
+      if (setDoneTasks) setDoneTasks(parsed.done);
+      setSelected(0);
+    };
+    reader.readAsText(file);
+  };
+
   const doneCount = roadmap.steps.filter(s => s.status === "done").length;
   const pct = Math.round((doneCount / roadmap.steps.length) * 100);
+  const nextGate = roadmap.steps.find(s => s.gate && s.status !== "done");
+  const stepPct = step.subtasks.length ? Math.round((doneN / step.subtasks.length) * 100) : 0;
 
   let lastPhase = null;
 
   return (
     <div className="page">
-      <div className="greeting" style={{ marginBottom: 16, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <h1 className="display" style={{ fontSize: 24 }}>{roadmap.program?.name || "Your plan"}</h1>
+      <div className="greeting" style={{ marginBottom: 12, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          {editPlan ? (
+            <input className="pe-input pe-title" style={{ fontSize: 24, fontWeight: 600 }} value={roadmap.program?.name || ""}
+              onChange={e => setRoadmap({ ...roadmap, program: { ...(roadmap.program || {}), name: e.target.value } })}
+              placeholder="Name your plan" />
+          ) : (
+            <h1 className="display" style={{ fontSize: 24 }}>{roadmap.program?.name || "Your plan"}</h1>
+          )}
           <div className="sub">{doneCount} of {roadmap.steps.length} milestones complete · {pct}%</div>
         </div>
-        <button className={`btn sm ${editPlan ? "primary" : ""}`} onClick={() => { setEditPlan(e => !e); setRenameId(null); }}>
-          <Ico name={editPlan ? "Check" : "Pencil"} size={14} color={editPlan ? "#fff" : undefined} /> {editPlan ? "Done editing" : "Edit plan"}
-        </button>
+        <div className="plan-toolbar">
+          <input ref={csvRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={importCsv} />
+          <button className="btn sm" onClick={() => csvRef.current && csvRef.current.click()} title="Replace your plan from a CSV file"><Ico name="Upload" size={13} /> Import CSV</button>
+          <button className="btn sm" onClick={exportCsv} title="Download your plan as a CSV to edit in a spreadsheet"><Ico name="Download" size={13} /> Export CSV</button>
+          <button className="btn sm" onClick={addMilestone} title="Add a new section after the selected one"><Ico name="Plus" size={13} /> Add section</button>
+          <button className={`btn sm ${editPlan ? "primary" : ""}`} onClick={() => { setEditPlan(e => !e); setRenameId(null); setSelectedSub(null); }}>
+            <Ico name={editPlan ? "Check" : "Pencil"} size={14} color={editPlan ? "#fff" : undefined} /> {editPlan ? "Done editing" : "Edit plan"}
+          </button>
+        </div>
+      </div>
+
+      {/* Graduation slider — your walk from Start to the cap, plus what's now/next */}
+      <div className="plan-glance">
+        <div className="grad-slider">
+          <span className="grad-end start" title="Start"><Ico name="Flag" size={11} /></span>
+          <div className="grad-track">
+            <div className="grad-fill" style={{ width: `${pct}%` }} />
+            <div className="grad-cap" style={{ left: `${pct}%` }} title={`${pct}% · ${doneCount} of ${roadmap.steps.length} milestones`}>
+              <Ico name="GraduationCap" size={13} color="#fff" />
+            </div>
+          </div>
+          <span className="grad-end finish" title="Graduation"><Ico name="GraduationCap" size={15} /></span>
+        </div>
+        <div className="plan-glance-meta">
+          <span className="pg-chip strong"><Ico name="GraduationCap" size={12} /> {pct}% · {doneCount}/{roadmap.steps.length} milestones</span>
+          {isCurrent && !editPlan && <span className="pg-chip"><Ico name="MapPin" size={12} /> Now: <strong>{step.title}</strong></span>}
+          {nextGate && <span className="pg-chip"><Ico name="Flag" size={12} /> Next gate: <strong>{nextGate.title}</strong></span>}
+          {editPlan && <span className="pg-chip edit"><Ico name="Pencil" size={12} /> Editing — everything below is editable; drag to reorder.</span>}
+        </div>
       </div>
 
       <div className="step-wrap">
         {/* Spine */}
         <div className="spine">
+          {editPlan && <button className="btn sm spine-add" style={{ marginBottom: 8 }} onClick={() => addMilestoneAt(0)}><Ico name="Plus" size={14} /> Add section at top</button>}
           {roadmap.steps.map((s, i) => {
             const showPhase = s.phase !== lastPhase; lastPhase = s.phase;
             const dotClass = s.status === "done" ? "done" : s.status === "current" ? "current"
@@ -228,36 +401,66 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                 {editPlan ? (
                   <div className={`spine-item editing ${i === selected ? "sel" : ""} ${dragIdx === i ? "dragging" : ""}`}
                     draggable onDragStart={() => setDragIdx(i)} onDragOver={e => e.preventDefault()}
-                    onDrop={() => { if (dragIdx != null) moveStep(dragIdx, i); setDragIdx(null); }} onDragEnd={() => setDragIdx(null)}>
+                    onDrop={() => { if (dragIdx != null) moveStep(dragIdx, i); setDragIdx(null); }} onDragEnd={() => setDragIdx(null)}
+                    onClick={() => setSelected(i)}>
                     <span className="spine-drag" title="Drag to reorder"><Ico name="GripVertical" size={15} /></span>
                     <span className={`spine-dot ${dotClass} ${s.gate ? "gate" : ""}`}>{i + 1}</span>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       {renameId === s.id ? (
                         <input className="spine-rename" autoFocus defaultValue={s.title}
+                          onClick={e => e.stopPropagation()}
                           onBlur={e => { renameStep(s.id, e.target.value.trim() || s.title); setRenameId(null); }}
                           onKeyDown={e => { if (e.key === "Enter") { renameStep(s.id, e.target.value.trim() || s.title); setRenameId(null); } }} />
                       ) : (
-                        <span className="spine-t1" onClick={() => setRenameId(s.id)} title="Rename">{s.title} <Ico name="Pencil" size={11} /></span>
+                        <span className="spine-t1" onClick={e => { e.stopPropagation(); setRenameId(s.id); }} title="Rename">{s.title} <Ico name="Pencil" size={11} /></span>
                       )}
-                      <span className="spine-t2">{s.estimate}</span>
                     </span>
                     <span className="spine-move">
-                      <button disabled={i === 0} onClick={() => moveStep(i, i - 1)} aria-label="Move up"><Ico name="ChevronUp" size={14} /></button>
-                      <button disabled={i === roadmap.steps.length - 1} onClick={() => moveStep(i, i + 1)} aria-label="Move down"><Ico name="ChevronDown" size={14} /></button>
+                      <button disabled={i === 0} onClick={e => { e.stopPropagation(); moveStep(i, i - 1); }} aria-label="Move up"><Ico name="ChevronUp" size={14} /></button>
+                      <button disabled={i === roadmap.steps.length - 1} onClick={e => { e.stopPropagation(); moveStep(i, i + 1); }} aria-label="Move down"><Ico name="ChevronDown" size={14} /></button>
                     </span>
-                    <button className="spine-del" disabled={roadmap.steps.length <= 1} onClick={() => removeStepById(s.id)} aria-label="Remove milestone" title="Remove this section"><Ico name="Trash2" size={13} /></button>
+                    <button className="spine-del" disabled={roadmap.steps.length <= 1} onClick={e => { e.stopPropagation(); removeStepById(s.id); }} aria-label="Remove milestone" title="Remove this section"><Ico name="Trash2" size={13} /></button>
                   </div>
                 ) : (
-                  <button className={`spine-item ${i === selected ? "sel" : ""}`} onClick={() => { setSelected(i); onOpenStep && onOpenStep(s.id); }}>
+                  <>
+                  <button className={`spine-item ${i === selected && selectedSub == null ? "sel" : ""}`}
+                    onClick={() => { setSelected(i); setSelectedSub(null); setSpineOpen(prev => new Set(prev).add(s.id)); }}>
                     <span className={`spine-dot ${dotClass} ${s.gate ? "gate" : ""}`}>
                       {s.status === "done" ? <Ico name="Check" size={14} color="#fff" />
                         : s.recovery ? <Ico name="AlertTriangle" size={13} color="#fff" /> : i + 1}
                     </span>
-                    <span>
-                      <span className="spine-t1">{s.title} {s.gate && <span className="spine-flag">gate</span>}{s.status === "redo" && <span className="spine-flag">redo</span>}</span>
-                      <span className="spine-t2">{s.estimate}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      {/* No "gate" badge here any more — a gate is already legible
+                          from its ringed dot, and the row reads better with the
+                          disclosure caret in that space. "redo" stays: it is a
+                          state you have to act on, not a property of the step. */}
+                      <span className="spine-t1">{s.title}{s.status === "redo" && <span className="spine-flag">redo</span>}</span>
                     </span>
+                    {s.subtasks.length > 0 && (
+                      <span className={`spine-caret ${spineOpen.has(s.id) ? "open" : ""}`} role="button"
+                        aria-label={spineOpen.has(s.id) ? "Hide sub-milestones" : "Show sub-milestones"}
+                        onClick={(e) => toggleSpine(s.id, e)}>
+                        <Ico name="ChevronDown" size={14} />
+                      </span>
+                    )}
                   </button>
+                  {spineOpen.has(s.id) && s.subtasks.length > 0 && (
+                    <div className="spine-subs">
+                      {s.subtasks.map((t, j) => {
+                        const sd = doneTasks.has(`${s.id}::${t}`);
+                        const isSel = i === selected && selectedSub === j;
+                        return (
+                          <button key={j} className={`spine-sub ${isSel ? "sel" : ""} ${sd ? "done" : ""}`}
+                            onClick={() => { setSelected(i); setSelectedSub(isSel ? null : j); }}>
+                            <span className="spine-sub-code">{i + 1}{planLetter(j)}</span>
+                            <span className="spine-sub-t">{t}</span>
+                            {sd && <Ico name="Check" size={11} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  </>
                 )}
               </React.Fragment>
             );
@@ -267,43 +470,111 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
 
         {/* Step sheet */}
         <div>
-          <div className={`step-head ${step.recovery ? "recovery" : ""}`}>
-            <div className="step-num">{step.recovery ? "!" : stepNum}</div>
-            <div style={{ flex: 1 }}>
-              <div className="eyebrow"><Ico name={step.icon} size={13} /> {step.recovery ? "Recovery" : isDone ? "Completed" : `Step ${stepNum} · ${step.phase}`}</div>
-              <h1 className="display">{step.title}</h1>
-              <p className="obj">{step.objective}</p>
-              <div className="meta">
-                <span className="chip"><Ico name="Clock" size={12} /> {step.estimate}</span>
-                {step.deliverableSource && <span className="chip"><Ico name="FileText" size={12} /> Source: {step.deliverableSource}</span>}
-                {step.deliverable && !step.handbookDerived && <span className="chip deliv-sat"><Ico name="CheckCircle2" size={12} /> Satisfies: {step.deliverable}</span>}
-                {stepIsCurrentNow && stuck >= (H.STALL_DAYS || 14) && (
-                  <span className="chip chip-risk"><Ico name="AlertTriangle" size={12} /> Stuck {stuck} days — let's unblock it</span>
-                )}
+          {subView ? (
+            <>
+              {/* Sub-milestone sheet: its own head, the milestone's tips, and
+                  the how-to walkthrough as its concrete steps to complete. */}
+              <div className="step-head">
+                <div className="step-num" style={{ fontSize: 16 }}>{subCode}</div>
+                <div style={{ flex: 1 }}>
+                  <div className="eyebrow"><Ico name="CornerDownRight" size={13} /> Milestone {stepNum} · {step.title}</div>
+                  <h1 className="display" style={{ fontSize: 24 }}>{subT}</h1>
+                  <div className="meta">
+                    <span className={`chip ${doneTasks.has(tkey(subT)) ? "deliv-sat" : ""}`}>
+                      <Ico name={doneTasks.has(tkey(subT)) ? "CheckCircle2" : "Circle"} size={12} /> {doneTasks.has(tkey(subT)) ? "Done" : "To do"}
+                    </span>
+                    <span className="chip"><Ico name="ListChecks" size={12} /> Sub-milestone {selectedSub + 1} of {step.subtasks.length}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <button className="btn soft" onClick={() => toggleTask(subT)}>
+                    <Ico name={doneTasks.has(tkey(subT)) ? "Undo2" : "Check"} size={14} /> {doneTasks.has(tkey(subT)) ? `Mark ${subCode} not done` : `Mark ${subCode} done`}
+                  </button>
+                  <button className="btn" onClick={() => setSelectedSub(null)}><Ico name="ArrowLeft" size={14} /> Back to milestone {stepNum}</button>
+                </div>
+              </div>
+              {risks.length > 0 && (
+                <div className="risks">
+                  <div className="risks-h"><Ico name="Lightbulb" size={14} /> What trips people up here</div>
+                  <ul className="risks-list">
+                    {risks.map((r, i) => <li key={i}><Ico name="AlertTriangle" size={12} /> <span>{r}</span></li>)}
+                  </ul>
+                </div>
+              )}
+              <div className="section-label"><span className="ic"><Ico name="ListChecks" size={13} /></span> Steps to complete {subCode} — and how to do them</div>
+              <div className="subsheet-howto">
+                <PlanHowTo key={`${step.id}::${subT}`} roadmap={roadmap} step={step} sub={subT} code={subCode} onAsk={onAsk} />
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                {selectedSub > 0 && <button className="btn sm" onClick={() => setSelectedSub(selectedSub - 1)}><Ico name="ChevronLeft" size={13} /> {stepNum}{planLetter(selectedSub - 1)}</button>}
+                {selectedSub < step.subtasks.length - 1 && <button className="btn sm" onClick={() => setSelectedSub(selectedSub + 1)}>{stepNum}{planLetter(selectedSub + 1)} <Ico name="ChevronRight" size={13} /></button>}
+              </div>
+            </>
+          ) : (
+          <>
+          {editPlan ? (
+            <div className="step-head editing">
+              <div className="step-num">{stepNum}</div>
+              <div style={{ flex: 1 }}>
+                <div className="pe-row">
+                  <input className="pe-input pe-eyebrow" value={step.phase || ""} onChange={e => patchStep({ phase: e.target.value })} placeholder="Phase (e.g. Research)" />
+                  <label className="pe-gate" title="A gate is a formal checkpoint that blocks progress until passed">
+                    <input type="checkbox" checked={!!step.gate} onChange={e => patchStep({ gate: e.target.checked })} /> Gate
+                  </label>
+                </div>
+                <input className="pe-input pe-title" value={step.title} onChange={e => patchStep({ title: e.target.value })} placeholder="Milestone title" />
+                <textarea className="pe-input pe-obj" value={step.objective || ""} onChange={e => patchStep({ objective: e.target.value })} placeholder="What does finishing this section look like?" rows={2} />
+              </div>
+              <div className="pe-head-acts">
+                <button className="btn sm" onClick={() => addMilestoneAt(selected)} title="Add a section before this one"><Ico name="ArrowUp" size={13} /> Add above</button>
+                <button className="btn sm" onClick={() => addMilestoneAt(selected + 1)} title="Add a section after this one"><Ico name="ArrowDown" size={13} /> Add below</button>
+                <button className="btn sm danger" disabled={roadmap.steps.length <= 1} onClick={() => removeStepById(step.id)}><Ico name="Trash2" size={13} /> Delete</button>
               </div>
             </div>
-            {!isCurrent ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {!isDone && (
-                  <button className="btn soft" onClick={() => workAlso(step.id)} title="Progress is not linear. Keep everything else going and run this in parallel.">
-                    <Ico name="Plus" size={14} /> Work on this too
-                  </button>
+          ) : (
+            <div className={`step-head ${step.recovery ? "recovery" : ""}`}>
+              <div className="step-num">{step.recovery ? "!" : stepNum}</div>
+              <div style={{ flex: 1 }}>
+                <div className="eyebrow"><Ico name={step.icon} size={13} /> {step.recovery ? "Recovery" : isDone ? "Completed" : `Step ${stepNum} · ${step.phase}`}</div>
+                <h1 className="display">{step.title}</h1>
+                <p className="obj">{step.objective}</p>
+                <div className="meta">
+                                    {step.deliverableSource && <span className="chip"><Ico name="FileText" size={12} /> Source: {step.deliverableSource}</span>}
+                  {step.deliverable && !step.handbookDerived && <span className="chip deliv-sat"><Ico name="CheckCircle2" size={12} /> Satisfies: {step.deliverable}</span>}
+                  {stepIsCurrentNow && stuck >= (H.STALL_DAYS || 14) && (
+                    <span className="chip chip-risk"><Ico name="AlertTriangle" size={12} /> Stuck {stuck} days — let's unblock it</span>
+                  )}
+                </div>
+                {step.subtasks.length > 0 && (
+                  <div className="pe-prog">
+                    <div className="pe-prog-bar"><span style={{ width: `${stepPct}%` }} /></div>
+                    <span className="pe-prog-l">{allDone ? "All steps done — nice work." : `${doneN}/${step.subtasks.length} steps done`}</span>
+                  </div>
                 )}
-                <button className="btn" onClick={() => setCurrent(step.id)} title="Make this your only active step">
-                  <Ico name={isDone ? "Undo2" : "MapPin"} size={14} /> {isDone ? "Step back here" : "Focus only here"}
-                </button>
               </div>
-            ) : (
-              activeCount > 1 && (
-                <button className="btn" onClick={() => stopHere(step.id)} title="Set this back to not started">
-                  <Ico name="Pause" size={14} /> Stop working here
-                </button>
-              )
-            )}
-          </div>
+              {!isCurrent ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {!isDone && (
+                    <button className="btn soft" onClick={() => workAlso(step.id)} title="Progress is not linear. Keep everything else going and run this in parallel.">
+                      <Ico name="Plus" size={14} /> Work on this too
+                    </button>
+                  )}
+                  <button className="btn" onClick={() => setCurrent(step.id)} title="Make this your only active step">
+                    <Ico name={isDone ? "Undo2" : "MapPin"} size={14} /> {isDone ? "Step back here" : "Focus only here"}
+                  </button>
+                </div>
+              ) : (
+                activeCount > 1 && (
+                  <button className="btn" onClick={() => stopHere(step.id)} title="Set this back to not started">
+                    <Ico name="Pause" size={14} /> Stop working here
+                  </button>
+                )
+              )}
+            </div>
+          )}
 
           {/* What trips people up here — surfaces tacit knowledge at the right moment */}
-          {risks.length > 0 && (
+          {!editPlan && risks.length > 0 && (
             <div className="risks">
               <div className="risks-h"><Ico name="Lightbulb" size={14} /> What trips people up here</div>
               <ul className="risks-list">
@@ -312,7 +583,7 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
             </div>
           )}
 
-          {isDone && (
+          {isDone && !editPlan && (
             <div className="tip tip-coach" style={{ marginBottom: 16 }}>
               <span className="tip-ico"><Ico name="Check" size={15} color="#fff" /></span>
               <div className="tip-body">You finished this milestone. Browsing it for reference — jump to your current step in the list anytime.</div>
@@ -320,86 +591,67 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
           )}
 
           {/* Committee Builder — full workbench for the committee step */}
-          {(step.id === "committee" || step.templateId === "committee") && window.CommitteeBuilder && (
+          {!editPlan && (step.id === "committee" || step.templateId === "committee") && window.CommitteeBuilder && (
             <>
               <div className="section-label"><span className="ic"><Ico name="Users" size={13} /></span> Committee builder · score real names or get suggestions</div>
               <window.CommitteeBuilder />
             </>
           )}
 
-          {/* Live tools — user-editable per step */}
-          <div className="section-label" style={{ display: "flex", alignItems: "center" }}>
-            <span className="ic"><Ico name="Wrench" size={13} /></span> Your tools for this step
-            <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setToolPicker(o => !o)}>
-              <Ico name={toolPicker ? "ChevronUp" : "Plus"} size={13} /> {toolPicker ? "Close" : "Add tool"}
-            </button>
-          </div>
-          {toolPicker && (
-            <div className="feat-picker">
-              {Object.keys(RE2.FEATURES).filter(f => !effActive.includes(f)).map(f => {
-                const feat = RE2.feature(f);
-                return (
-                  <button key={f} className="feat-add-chip" onClick={() => addTool(f)} title={feat.blurb}>
-                    <Ico name={feat.icon} size={12} /> {feat.name} <Ico name="Plus" size={11} />
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {liveTools.length > 0 ? (
-            <div className="toolgrid">
-              {liveTools.map(f => (
-                <div className="tool-wrap" key={f}>
-                  <button className="tool-x" onClick={() => removeTool(f)} title="Remove this tool from the step"><Ico name="X" size={12} /></button>
-                  {window.renderTool(f)}
-                </div>
-              ))}
-            </div>
-          ) : chipOnly.length === 0 && (
-            <div style={{ fontSize: 12.5, color: "var(--text-3)", marginBottom: 14 }}>No tools on this step yet. Add the ones you want here.</div>
-          )}
-
-          {/* Checklist — fully editable: add, rename, remove */}
-          <div className="section-label"><span className="ic"><Ico name="ListChecks" size={13} /></span> Steps to complete · {doneN}/{step.subtasks.length}</div>
+          {/* Checklist — the heart of the page: milestones to complete + how to
+              do each (AI walkthrough on expand). Fully editable in edit mode. */}
+          <div className="section-label"><span className="ic"><Ico name="ListChecks" size={13} /></span> Steps to complete &amp; how to do them · {doneN}/{step.subtasks.length}</div>
           <div className="tasklist">
-            {step.subtasks.map((t, i) => {
-              const d = doneTasks.has(tkey(t));
-              const open = openTask === i;
-              return (
-                <div key={i} className={`taskrow ${d ? "done" : ""} ${open ? "open" : ""}`}>
+            {editPlan ? (
+              step.subtasks.map((t, i) => (
+                <div key={i} className="taskrow editing">
                   <div className="taskrow-main">
-                    <button className="cb" onClick={() => toggleTask(t)} aria-label={d ? "Mark not done" : "Mark done"}>{d && <Ico name="Check" size={12} color="#fff" />}</button>
-                    {taskEdit === i ? (
-                      <input className="spine-rename" style={{ flex: 1 }} autoFocus defaultValue={t}
-                        onBlur={e => renameTask(i, e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") renameTask(i, e.target.value); if (e.key === "Escape") setTaskEdit(null); }} />
-                    ) : (
-                      <button className="taskrow-text" onClick={() => setOpenTask(open ? -1 : i)}>{t}</button>
-                    )}
-                    <span className="taskrow-tools">
-                      <button className="dv-act" onClick={() => setTaskEdit(taskEdit === i ? null : i)} title="Edit this to-do"><Ico name="Pencil" size={13} /></button>
-                      <button className="dv-act danger" onClick={() => removeTask(i)} title="Remove this to-do"><Ico name="X" size={13} /></button>
+                    <span className="taskrow-code">{stepNum}{planLetter(i)}</span>
+                    <span className="spine-move">
+                      <button disabled={i === 0} onClick={() => moveSub(i, -1)} aria-label="Move up"><Ico name="ChevronUp" size={13} /></button>
+                      <button disabled={i === step.subtasks.length - 1} onClick={() => moveSub(i, 1)} aria-label="Move down"><Ico name="ChevronDown" size={13} /></button>
                     </span>
-                    <button className="taskrow-go" onClick={() => setOpenTask(open ? -1 : i)} aria-label="How do I do this?">
-                      <span className="taskrow-help">How?</span> <Ico name={open ? "ChevronUp" : "ChevronDown"} size={15} />
-                    </button>
+                    <input className="spine-rename" style={{ flex: 1 }} defaultValue={t} key={`e-${step.id}-${i}-${t}`}
+                      onBlur={e => renameTask(i, e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} />
+                    <button className="dv-act danger" onClick={() => removeTask(i)} title="Remove this to-do"><Ico name="X" size={13} /></button>
                   </div>
-                  {open && (
-                    <div className="taskrow-actions">
-                      <button className="btn sm primary" onClick={() => onAsk && onAsk(`I'm a PhD student working on "${step.title}". Walk me through, step by step, how to: ${t} Assume I'm new to this and give concrete first actions.`)}>
-                        <Ico name="MessageCircle" size={13} color="#fff" /> Ask your advisors how
-                      </button>
-                      {skillsUnlocked && (
-                        <button className="btn sm" onClick={() => onNav && onNav("skills")}>
-                          <Ico name="Sparkles" size={13} /> Find a tool for this
-                        </button>
-                      )}
-                      {!d && <button className="btn sm ghost" onClick={() => { toggleTask(t); setOpenTask(-1); }}><Ico name="Check" size={13} /> Mark done</button>}
-                    </div>
-                  )}
                 </div>
-              );
-            })}
+              ))
+            ) : (
+              step.subtasks.map((t, i) => {
+                const d = doneTasks.has(tkey(t));
+                const open = openTask === i;
+                return (
+                  <div key={i} className={`taskrow ${d ? "done" : ""} ${open ? "open" : ""}`}>
+                    <div className="taskrow-main">
+                      <span className="taskrow-code">{stepNum}{planLetter(i)}</span>
+                      <button className="cb" onClick={() => toggleTask(t)} aria-label={d ? "Mark not done" : "Mark done"}>{d && <Ico name="Check" size={12} color="#fff" />}</button>
+                      {taskEdit === i ? (
+                        <input className="spine-rename" style={{ flex: 1 }} autoFocus defaultValue={t}
+                          onBlur={e => renameTask(i, e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") renameTask(i, e.target.value); if (e.key === "Escape") setTaskEdit(null); }} />
+                      ) : (
+                        <button className="taskrow-text" onClick={() => setOpenTask(open ? -1 : i)}>{t}</button>
+                      )}
+                      <span className="taskrow-tools">
+                        <button className="dv-act" onClick={() => setTaskEdit(taskEdit === i ? null : i)} title="Edit this to-do"><Ico name="Pencil" size={13} /></button>
+                        <button className="dv-act danger" onClick={() => removeTask(i)} title="Remove this to-do"><Ico name="X" size={13} /></button>
+                      </span>
+                      <button className="taskrow-go" onClick={() => setOpenTask(open ? -1 : i)} aria-label="How do I do this?">
+                        <span className="taskrow-help">How?</span> <Ico name={open ? "ChevronUp" : "ChevronDown"} size={15} />
+                      </button>
+                    </div>
+                    {open && (
+                      <div className="taskrow-actions">
+                        <PlanHowTo roadmap={roadmap} step={step} sub={t} code={`${stepNum}${planLetter(i)}`} onAsk={onAsk} />
+                        {!d && <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => { toggleTask(t); setOpenTask(-1); }}><Ico name="Check" size={13} /> Mark {stepNum}{planLetter(i)} done</button>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
             <div className="task-add">
               <input className="def-add-input" value={newTask} onChange={e => setNewTask(e.target.value)}
                 placeholder="Add your own to-do for this section..."
@@ -408,39 +660,8 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
             </div>
           </div>
 
-          {/* What changes */}
-          {(step.add.length > 0 || step.retire.length > 0) && (
-            <>
-              <div className="section-label"><span className="ic"><Ico name="Replace" size={13} /></span> How your tools change here</div>
-              <div className="changes">
-                <div className="change-col add">
-                  <div className="cc-h"><Ico name="PlusCircle" size={14} /> Unlocked now</div>
-                  {step.add.length === 0 ? <span style={{ fontSize: 12, color: "var(--text-3)" }}>Nothing new.</span>
-                    : step.add.map(f => <span key={f} className="chip-feat"><Ico name={RE2.feature(f).icon} size={12} /> {RE2.feature(f).name}</span>)}
-                </div>
-                <div className="change-col ret">
-                  <div className="cc-h"><Ico name="MinusCircle" size={14} /> Retires when done</div>
-                  {step.retire.length === 0 ? <span style={{ fontSize: 12, color: "var(--text-3)" }}>Nothing retires.</span>
-                    : step.retire.map(f => <span key={f} className="chip-feat"><Ico name={RE2.feature(f).icon} size={12} /> {RE2.feature(f).name}</span>)}
-                </div>
-              </div>
-            </>
-          )}
-
-          {chipOnly.length > 0 && (
-            <>
-              <div className="section-label"><span className="ic"><Ico name="Boxes" size={13} /></span> Also active</div>
-              <div>{chipOnly.map(f => (
-                <span key={f} className="chip-feat">
-                  <Ico name={RE2.feature(f).icon} size={12} /> {RE2.feature(f).name}
-                  <button className="chipx" onClick={() => removeTool(f)} title="Remove this tool from the step"><Ico name="X" size={10} /></button>
-                </span>
-              ))}</div>
-            </>
-          )}
-
           {/* Complete CTA */}
-          {isCurrent && (
+          {isCurrent && !editPlan && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 24, padding: "18px 20px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r)" }}>
               <div style={{ fontSize: 13.5, color: "var(--text-2)" }}>
                 {allDone ? <><b style={{ color: "var(--text)" }}>All steps checked.</b> Ready to celebrate this milestone.</> : `${step.subtasks.length - doneN} step${step.subtasks.length - doneN === 1 ? "" : "s"} left`}
@@ -449,6 +670,8 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                 <Ico name="Flag" size={15} color="#fff" /> Complete milestone
               </button>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>
@@ -657,7 +880,6 @@ const HELP_GLOSSARY = [
   ["Candidacy", "Officially cleared to do dissertation research (the paperwork after prelims)."]
 ];
 const HELP_FAQ = [
-  ["Why don't I see Skills yet?", "Skills unlock after 5 chat messages — or turn on “Reveal everything now” in Settings → Feature unlocks."],
   ["How do I simplify my home screen?", "Set Display density to “Just what I need” in Settings."],
   ["Something went wrong with my research", "Use “Something came up?” on Home or My Plan — describe it in plain words and your plan re-routes around it."],
   ["Are my conversations private?", "Choose on-device / private models in Settings to keep processing local (slightly lower accuracy)."],
@@ -665,6 +887,167 @@ const HELP_FAQ = [
 ];
 const SETTINGS_INSTITUTIONS = window.UNIVERSITY_OPTIONS || [];
 const SETTINGS_PROGRAMS = window.PROGRAM_OPTIONS || [];
+
+// ============================================================================
+// IMPORTANT FACULTY — who matters to your PhD, their role, and how often you
+// mean to meet them. Overdue meetings get flagged here and in the morning brief.
+// ============================================================================
+const FACULTY_KEY = "phd-coach-faculty-v1";
+const FACULTY_ROLES = ["Advisor", "Co-advisor", "Committee chair", "Committee member", "Mentor", "Collaborator", "Program director"];
+const FACULTY_CADENCES = [
+  ["weekly", "Weekly", 7], ["biweekly", "Every 2 weeks", 14], ["monthly", "Monthly", 31],
+  ["quarterly", "Quarterly", 92], ["as-needed", "As needed", 0]
+];
+const cadenceDays = (c) => (FACULTY_CADENCES.find(x => x[0] === c) || [0, "", 0])[2];
+const cadenceLabel = (c) => (FACULTY_CADENCES.find(x => x[0] === c) || ["", "As needed"])[1];
+function facultyMeetState(f) {
+  const days = cadenceDays(f.cadence);
+  if (!days) return null;
+  if (!f.lastMet) return { overdue: true, text: "no meeting logged yet" };
+  const since = Math.floor((Date.now() - new Date(f.lastMet + "T00:00:00")) / 86400000);
+  if (isNaN(since)) return null;
+  if (since > days) return { overdue: true, text: `overdue — last met ${since}d ago` };
+  return { overdue: false, text: `last met ${since === 0 ? "today" : since + "d ago"}` };
+}
+
+function FacultyCard() {
+  const [items, setItems] = window.useSyncedStore(FACULTY_KEY, [], "faculty");
+  const [f, setF] = useS2({ name: "", role: FACULTY_ROLES[0], cadence: "biweekly", email: "" });
+  const add = () => {
+    if (!f.name.trim()) return;
+    setItems([...items, { id: "f" + Date.now(), ...f, name: f.name.trim(), email: f.email.trim(), lastMet: "" }]);
+    setF({ name: "", role: FACULTY_ROLES[0], cadence: "biweekly", email: "" });
+  };
+  const patch = (id, p) => setItems(items.map(x => x.id === id ? { ...x, ...p } : x));
+  const metToday = (id) => patch(id, { lastMet: new Date().toISOString().slice(0, 10) });
+
+  return (
+    <div className="card card-pad" style={{ marginBottom: 16 }}>
+      <div className="card-h"><span className="ico"><Ico name="Users" size={14} /></span> Important faculty</div>
+      <div style={{ fontSize: 12.5, color: "var(--text-2)", margin: "2px 0 10px" }}>
+        Advisors, committee members, and mentors — with how often you want to meet, so nobody slips through the cracks.
+      </div>
+      <div className="fac-add">
+        <input style={{ flex: 2 }} value={f.name} onChange={e => setF({ ...f, name: e.target.value })} onKeyDown={e => { if (e.key === "Enter") add(); }} placeholder="Name (e.g. Dr. Rivera)" />
+        <select value={f.role} onChange={e => setF({ ...f, role: e.target.value })} aria-label="Role">
+          {FACULTY_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <select value={f.cadence} onChange={e => setF({ ...f, cadence: e.target.value })} aria-label="Meeting cadence">
+          {FACULTY_CADENCES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+        </select>
+        <button className="tool-add" onClick={add} aria-label="Add faculty member"><Ico name="Plus" size={14} /></button>
+      </div>
+      <div className="fac-add" style={{ marginTop: 6 }}>
+        <input style={{ flex: 1 }} value={f.email} onChange={e => setF({ ...f, email: e.target.value })} onKeyDown={e => { if (e.key === "Enter") add(); }} placeholder="Email (optional — lets email import spot their readings)" />
+      </div>
+      <div className="fac-list">
+        {items.length === 0 && <div className="tool-empty">No faculty added yet. Start with your advisor.</div>}
+        {items.map(m => { const ms = facultyMeetState(m); return (
+          <div key={m.id} className="fac-row">
+            <span className="fac-av">{(m.name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("")}</span>
+            <div className="fac-main">
+              <span className="fac-name">{m.name}{m.email && <a className="fac-mail" href={`mailto:${m.email}`} title={m.email}><Ico name="Mail" size={11} /></a>}</span>
+              <span className="fac-meta">
+                <select className="fac-inline" value={m.role} onChange={e => patch(m.id, { role: e.target.value })} aria-label="Role">
+                  {FACULTY_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                ·
+                <select className="fac-inline" value={m.cadence} onChange={e => patch(m.id, { cadence: e.target.value })} aria-label="Meeting cadence">
+                  {FACULTY_CADENCES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </span>
+              {ms && <span className={`fac-state ${ms.overdue ? "overdue" : ""}`}><Ico name={ms.overdue ? "AlertTriangle" : "CheckCircle2"} size={11} /> {ms.text}</span>}
+            </div>
+            <button className="btn sm" onClick={() => metToday(m.id)} title="Log that you met today"><Ico name="CalendarCheck" size={13} /> Met today</button>
+            <button className="tool-del" onClick={() => setItems(items.filter(x => x.id !== m.id))} aria-label="Remove"><Ico name="X" size={12} /></button>
+          </div>
+        ); })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// CALENDAR & MAIL — Google / Outlook connections powering the morning brief,
+// deadline sync, and reading-queue email import.
+// ============================================================================
+function IntegrationsCard() {
+  const [status, setStatus] = useS2(null);
+  const [busy, setBusy] = useS2("");
+  const [err, setErr] = useS2("");
+  const refresh = () => {
+    if (!window.CoachAPI || !window.CoachAPI.isAuthed()) return;
+    window.CoachAPI.integrationsStatus().then(setStatus).catch(() => setStatus(null));
+  };
+  useE2(() => {
+    refresh();
+    const onMsg = (e) => {
+      if (e.data && e.data.type === "phd-integration") {
+        refresh();
+        try { sessionStorage.removeItem("phd-coach-brief-v1"); } catch (x) {}
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  const connect = async (provider) => {
+    setBusy(provider); setErr("");
+    try {
+      const { auth_url } = await window.CoachAPI.integrationConnect(provider);
+      window.open(auth_url, "phd-oauth", "width=540,height=680,menubar=no,toolbar=no");
+    } catch (e) {
+      setErr(e.message || `Couldn't start the ${provider} connection.`);
+    } finally { setBusy(""); }
+  };
+  const disconnect = async (provider) => {
+    setBusy(provider);
+    try { await window.CoachAPI.integrationDisconnect(provider); refresh(); } catch (e) {}
+    setBusy("");
+    try { sessionStorage.removeItem("phd-coach-brief-v1"); } catch (x) {}
+  };
+
+  const row = (provider, label, icon, blurb) => {
+    const s = (status || {})[provider] || {};
+    return (
+      <div className="intg-row" key={provider}>
+        <span className="intg-ico"><Ico name={icon} size={16} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{label}
+            {s.connected && <span className="intg-on"><Ico name="CheckCircle2" size={11} /> connected{s.account_email ? ` · ${s.account_email}` : ""}</span>}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-2)" }}>{blurb}</div>
+        </div>
+        {s.connected ? (
+          <button className="btn sm" disabled={busy === provider} onClick={() => disconnect(provider)}><Ico name="Unplug" size={13} /> Disconnect</button>
+        ) : (
+          <button className="btn sm primary" disabled={busy === provider || status === null || s.configured === false}
+            title={s.configured === false ? "Not configured on this server — set the OAuth env vars" : undefined}
+            onClick={() => connect(provider)}>
+            <Ico name="Plug" size={13} color="#fff" /> Connect
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginBottom: 16 }}>
+      <div className="card-h"><span className="ico"><Ico name="CalendarDays" size={14} /></span> Calendar &amp; mail</div>
+      <div style={{ fontSize: 12.5, color: "var(--text-2)", margin: "2px 0 10px" }}>
+        Connect a calendar to see your next meeting on Home, sync deadlines, and let email import pull readings your advisor sends you.
+      </div>
+      {row("google", "Google Calendar + Gmail", "Calendar", "Morning brief, deadline sync, and reading import from Gmail.")}
+      {row("microsoft", "Outlook Calendar + Mail", "CalendarDays", "Morning brief, deadline sync, and reading import from Outlook.")}
+      {err && <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--rose)", display: "flex", gap: 6, alignItems: "center" }}><Ico name="AlertTriangle" size={13} /> {err}</div>}
+      {status && status.google && !status.google.configured && !status.microsoft.configured && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-3)" }}>
+          This server has no OAuth apps configured yet — an admin needs to set GOOGLE_OAUTH_CLIENT_ID/SECRET or MS_OAUTH_CLIENT_ID/SECRET.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function HelpCenter({ onClose, onReplayTour }) {
   const sections = (window.COACH_TOUR_STEPS || []).filter(s => s.view);
@@ -698,7 +1081,7 @@ function HelpCenter({ onClose, onReplayTour }) {
   );
 }
 
-function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs = {}, setPrefs, engagement = {}, unlocked = {}, onRevealAll, onResetDrip, onToggleHidden, onRebuild, onReplayOnboarding, onSignOut }) {
+function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs = {}, setPrefs, engagement = {}, unlocked = {}, onRevealAll, onResetDrip, onToggleHidden, onRebuild, onLoadTemplate, onReplayOnboarding, onSignOut }) {
   const [help, setHelp] = useS2(false);
   const currentInstitution = prefs.institution || roadmap?.program?.institution || "";
   const currentProgram = prefs.program || roadmap?.program?.name || "";
@@ -718,7 +1101,8 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
       return { ...r, program: { ...program, [key === "program" ? "name" : "institution"]: clean } };
     });
   };
-  const unlockRows = [["multiple", "Compare advisors (Multiple mode)", "after 1 message", 1], ["skills", "Skills library", "after 5 messages", 5], ["personas10", "All 10 advisors", "after 15 messages", 15]];
+  // "skills" omitted — the Skills page is temporarily hidden for beta.
+  const unlockRows = [["multiple", "Compare advisors (Multiple mode)", "after 1 message", 1], ["personas10", "All 10 advisors", "after 15 messages", 15]];
 
   return (
     <div className="page page-narrow">
@@ -748,6 +1132,12 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
           />
         </div>
       </div>
+
+      {/* Important faculty — roles + meeting cadence */}
+      <FacultyCard />
+
+      {/* Calendar & mail connections */}
+      <IntegrationsCard />
 
       {/* Display density */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
@@ -829,6 +1219,12 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
           <div><div style={{ fontWeight: 600, fontSize: 14 }}>Rebuild plan</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>Start the setup over from scratch</div></div>
           <button className="btn sm" onClick={onRebuild}><Ico name="RefreshCw" size={14} /> Rebuild</button>
         </div>
+        {onLoadTemplate && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+            <div><div style={{ fontWeight: 600, fontSize: 14 }}>Load default template</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>The research-backed 5-year plan — quarters with week-sized steps</div></div>
+            <button className="btn sm" onClick={onLoadTemplate}><Ico name="LayoutTemplate" size={14} /> Load</button>
+          </div>
+        )}
       </div>
 
       {/* Account */}
@@ -1155,6 +1551,7 @@ function CoachRoot() {
   const [toast, setToast] = useS2("");
   const [showTour, setShowTour] = useS2(false);
   const [authMode, setAuthMode] = useS2("login"); // login | signup
+  const [restoring, setRestoring] = useS2(false); // fetching a returning user's saved plan
   const [palette, setPalette] = useS2(false); // ⌘K command palette
   const [activity, setActivity] = useS2(() => H.loadJSON(H.ACT_KEY, {})); // per-step last-touched
   const touchStep = (id) => { if (id) setActivity(a => ({ ...a, [id]: Date.now() })); };
@@ -1187,7 +1584,7 @@ function CoachRoot() {
   const reached = (thr) => prefs.revealAll || engagement.messages >= thr;
   const unlocked = useM2(() => ({
     multiple:   reached(1)  && !isHidden("multiple"),
-    skills:     reached(5)  && !isHidden("skills"),
+    skills:     false, // Skills page temporarily hidden for beta
     personas10: reached(15) && !isHidden("personas10")
   }), [prefs.revealAll, prefs.hidden, engagement.messages]);
   const focused = prefs.density === "focused";
@@ -1205,9 +1602,53 @@ function CoachRoot() {
   const resetDrip = () => { setEngagement(e => ({ messages: 0, visits: e.visits || 0 })); setSeenUnlocks([]); setPrefs(p => ({ ...p, revealAll: false, hidden: [] })); setUnlockPopup(null); };
   const academicProfile = useM2(() => rebuildProfile || buildAcademicProfile(signedInUserProfile(), prefs, roadmap), [rebuildProfile, prefs, roadmap, authed]);
 
+  // Meeting action items → the current step's to-do list. Fired by the Meeting
+  // Agenda tool so "Add to my to-dos" updates This Week live, no reload needed.
+  useE2(() => {
+    const onAdd = (e) => {
+      const items = (((e || {}).detail || {}).items || []).map(t => String(t).trim()).filter(Boolean);
+      if (!items.length) return;
+      setRoadmap(r => {
+        if (!r || !Array.isArray(r.steps)) return r;
+        const cur = r.steps.find(s => s.status === "current") || r.steps.find(s => s.status === "redo") || r.steps[0];
+        if (!cur) return r;
+        const merged = [...(cur.subtasks || [])];
+        items.forEach(t => { if (!merged.includes(t)) merged.push(t); });
+        return { ...r, steps: r.steps.map(s => s.id === cur.id ? { ...s, subtasks: merged } : s) };
+      });
+      setToast(`${items.length} action item${items.length === 1 ? "" : "s"} added to your to-do list`);
+    };
+    window.addEventListener("phd-add-todos", onAdd);
+    return () => window.removeEventListener("phd-add-todos", onAdd);
+  }, []);
+
+  // Defense Room "ask a follow-up" → jump into Chat pre-seeded (the persona
+  // selection is written to localStorage before this fires).
+  useE2(() => {
+    const onOpenChat = (e) => {
+      const seed = (((e || {}).detail || {}).seed || "").trim();
+      if (seed) setChatSeed(seed);
+      setView("chat");
+    };
+    window.addEventListener("phd-open-chat", onOpenChat);
+    return () => window.removeEventListener("phd-open-chat", onOpenChat);
+  }, []);
+
   useE2(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem(H.THEME_KEY, theme); } catch (e) {} }, [theme]);
   useE2(() => { H.saveJSON(H.RM_KEY, roadmap); }, [roadmap]);
   useE2(() => { H.saveJSON(H.TASK_KEY, [...doneTasks]); }, [doneTasks]);
+  // Best-effort backend backup of the plan + progress, so signing in from a new
+  // browser restores the dashboard instead of re-running onboarding.
+  useE2(() => {
+    if (!authed || !roadmap || !window.CoachAPI || window.CoachAPI.token() === "demo-token") return;
+    const t = setTimeout(() => { window.CoachAPI.putWorkspaceSection("roadmap", roadmap).catch(() => {}); }, 1200);
+    return () => clearTimeout(t);
+  }, [roadmap, authed]);
+  useE2(() => {
+    if (!authed || !roadmap || !window.CoachAPI || window.CoachAPI.token() === "demo-token") return;
+    const t = setTimeout(() => { window.CoachAPI.putWorkspaceSection("progress", [...doneTasks]).catch(() => {}); }, 1200);
+    return () => clearTimeout(t);
+  }, [doneTasks, authed]);
   useE2(() => { H.saveJSON(H.ACT_KEY, activity); }, [activity]);
   useE2(() => { H.saveJSON(H.PREFS_KEY, prefs); }, [prefs]);
   useE2(() => { H.saveJSON(H.ENGAGE_KEY, engagement); }, [engagement]);
@@ -1248,6 +1689,19 @@ function CoachRoot() {
     setRecovered(res.detour);
   };
 
+  // Settings → Your plan → Load default template (the research-backed 5-year plan)
+  const loadTemplatePlan = async () => {
+    if (!confirm("Replace your current plan with the default 5-year PhD template? Done checkmarks survive where titles match.")) return;
+    try {
+      const rm = await window.CoachPlanUtils.loadDefaultTemplate({ roadmap, doneTasks, setDoneTasks });
+      setRoadmap(rm);
+      setToast("Default PhD template loaded — tailor it in My Plan.");
+      setView("plan");
+    } catch (e) {
+      setToast((e && e.message) || "Couldn't load the template — is the backend running?");
+    }
+  };
+
   // 1) Not signed in → marketing landing / login. Auth is real (CoachAPI):
   // CoachLogin performs the backend login/signup and only calls onAuthed on
   // success. A brand-new account (isNew) lands in onboarding with a fresh plan.
@@ -1256,6 +1710,58 @@ function CoachRoot() {
     else if (window.CoachAPI) window.MOCK_USER = window.CoachAPI.getUser();
     setRebuildProfile(null);
     if (isNew) { setRoadmap(null); setDoneTasks(new Set()); }
+    else {
+      // localStorage is namespaced per account, and this component's state was
+      // initialized before sign-in (unscoped). Re-read the signed-in account's
+      // saved data now so returning users land on their dashboard, not onboarding.
+      const localRm = H.normalizeStoredRoadmap
+        ? H.normalizeStoredRoadmap(H.loadJSON(H.RM_KEY, null))
+        : H.loadJSON(H.RM_KEY, null);
+      setDoneTasks(new Set(H.loadJSON(H.TASK_KEY, [])));
+      setActivity(H.loadJSON(H.ACT_KEY, {}));
+      setPrefs(H.loadJSON(H.PREFS_KEY, { density: "full", revealAll: true, modelMode: "cloud", hidden: [] }));
+      setEngagement(H.loadJSON(H.ENGAGE_KEY, { messages: 0, visits: 0 }));
+      setSeenUnlocks(H.loadJSON(H.UNLOCKS_KEY, []));
+      // Always replace in-memory state (a previous account's plan may still be
+      // mounted after sign-out on this same page load).
+      setRoadmap(localRm || null);
+      if (!localRm) {
+        // Sign-in must land on the dashboard, never onboarding. Try the backend
+        // backup first; if the account has no saved plan anywhere, build the
+        // standard template plan (same as onboarding's Skip) and say so.
+        setRestoring(true);
+        (async () => {
+          let rm = null;
+          if (window.CoachAPI && window.CoachAPI.token() !== "demo-token") {
+            try {
+              const state = await window.CoachAPI.getWorkspaceState();
+              const saved = state && state.sections && state.sections.roadmap;
+              if (saved && Array.isArray(saved.steps) && saved.steps.length) {
+                rm = H.normalizeStoredRoadmap ? H.normalizeStoredRoadmap(saved) : saved;
+                const prog = state.sections.progress;
+                if (Array.isArray(prog)) setDoneTasks(new Set(prog));
+              }
+            } catch (e) {}
+          }
+          if (!rm) {
+            try {
+              const u = (window.CoachAPI && window.CoachAPI.getUser()) || {};
+              const programName = u.program || DEFAULT_ACADEMIC_PROGRAM;
+              const institution = u.institution || "";
+              const deliverables = await RE2.discoverDeliverables({ program: programName, institution, materials: [] });
+              rm = RE2.generateRoadmap({
+                program: { name: programName, institution }, deliverables,
+                startPosition: "coursework", workflow: { writeStyle: "unsure", publish: false }
+              });
+              if (H.normalizeStoredRoadmap) rm = H.normalizeStoredRoadmap(rm);
+              setToast("We started you on the standard plan — personalize it with your handbook in Settings → Your plan.");
+            } catch (e) { rm = null; }
+          }
+          if (rm) setRoadmap(rm);
+          setRestoring(false);
+        })();
+      }
+    }
     setAuthed(true);
     setView("home");
   };
@@ -1279,6 +1785,17 @@ function CoachRoot() {
       onSignIn={() => { setAuthMode("login"); setGate("login"); }} />;
   }
 
+  // 1.5) Signed in on a fresh browser → hold while the saved plan downloads,
+  // so returning users never flash into (or get stuck in) onboarding.
+  if (restoring && !roadmap) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, background: "var(--bg)" }}>
+        <Ico name="Loader" size={28} className="spin" />
+        <div style={{ fontSize: 14, color: "var(--text-2)" }}>Loading your plan…</div>
+      </div>
+    );
+  }
+
   // 2) Signed in, no plan yet → onboarding (onboarding hands up density/model prefs)
   if (!roadmap) {
     return <window.CoachOnboarding
@@ -1294,16 +1811,21 @@ function CoachRoot() {
 
   let body;
   if (v === "home") body = <window.CoachDashboard roadmap={roadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} onNav={setView} onOpenSos={() => setSosOpen(true)} onOpenStep={openWorkspace} focused={focused} theme={theme} />;
+  // My Plan uses the V2 PlanView (the version deployed on main); the newer
+  // spreadsheet (CoachPlanSheet) is retired while we redo this section.
   else if (v === "plan") body = <PlanView roadmap={roadmap} setRoadmap={setRoadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} touchStep={touchStep} onCelebrate={setCelebrate} onOpenSos={() => setSosOpen(true)} onAsk={askInChat} onNav={setView} onOpenStep={openWorkspace} skillsUnlocked={unlocked.skills} />;
   else if (v === "chat") body = <window.CoachChatView roadmap={roadmap} setRoadmap={setRoadmap} onNav={setView} onToast={setToast} seed={chatSeed} onSeedConsumed={() => setChatSeed(null)} unlocked={unlocked} onMessage={bumpMessages} />;
+  else if (v === "meetings") body = <window.CoachMeetings onToast={setToast} />;
   else if (v === "skills") body = <window.CoachSkills roadmap={roadmap} onNav={setView} />;
-  else if (v === "insights") body = <window.CoachInsights onNav={setView} />;
+  else if (v === "insights") body = <window.CoachInsights onNav={setView} roadmap={roadmap} doneTasks={doneTasks} />;
   else if (v === "defense") body = <window.CoachDefenseRoom roadmap={roadmap} onNav={setView} onToast={setToast} />;
   else if (v === "documents") body = <window.CoachDocuments roadmap={roadmap} />;
+  else if (v === "wellness") body = <window.CoachWellness onNav={setView} roadmap={roadmap} setRoadmap={setRoadmap} onToast={setToast} />;
   else body = <SettingsView roadmap={roadmap} setRoadmap={setRoadmap} theme={theme} onToggleTheme={toggleTheme}
     prefs={prefs} setPrefs={setPrefs} engagement={engagement} unlocked={unlocked}
     onRevealAll={revealAllNow} onResetDrip={resetDrip} onToggleHidden={toggleHidden}
     onRebuild={() => { if (confirm("Rebuild your plan from scratch? Progress clears.")) { setRebuildProfile(buildAcademicProfile(signedInUserProfile(), prefs, roadmap)); setRoadmap(null); setDoneTasks(new Set()); } }}
+    onLoadTemplate={loadTemplatePlan}
     onReplayOnboarding={() => { setView("home"); setShowTour(true); }}
     onSignOut={signOut} />;
 
@@ -1312,7 +1834,7 @@ function CoachRoot() {
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <window.CoachRail view={view} onNav={setView} user={window.MOCK_USER} skillsUnlocked={unlocked.skills} onSignOut={signOut} />
       <main className="main" id="main-content" tabIndex={-1}>
-        <div className="topbar">
+        <div className={v === "documents" ? "topbar compact" : "topbar"}>
           <div style={{ fontSize: 13, color: "var(--text-2)", fontWeight: 500, display: "flex", alignItems: "center", gap: 8 }}>
             <Ico name="Compass" size={15} /> {roadmap.program?.name || "PhD Navigator"}
             {prefs.modelMode === "private" && <span className="private-pill" title="On-device / private models"><Ico name="ShieldCheck" size={12} /> Private</span>}
