@@ -139,6 +139,72 @@
     return h;
   }
 
+  // fetch() has no default timeout, so a request that never gets a response
+  // never settles and whatever awaited it spins forever. The API sleeps when
+  // idle and a cold start can take tens of seconds, which is exactly when this
+  // bites. Every call that a human is waiting on should use this.
+  async function fetchT(url, opts, ms) {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = setTimeout(() => { try { ctrl && ctrl.abort(); } catch (e) {} }, ms || 20000);
+    try {
+      return await fetch(url, ctrl ? Object.assign({}, opts, { signal: ctrl.signal }) : opts);
+    } catch (e) {
+      if (e && e.name === "AbortError") {
+        const err = new Error("The server didn't respond in time.");
+        err.timeout = true;
+        throw err;
+      }
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+
+  // A request that dies without a response is almost always "pointed at a
+  // backend that isn't there" rather than a real outage. When the base is a
+  // local one, fail over to the deployed API once and pin it, so the rest of
+  // the session works instead of repeating the same dead call.
+  const DEPLOYED_API = "https://phd-navigator-api.onrender.com";
+  async function apiFetch(path, opts, ms) {
+    try {
+      return await fetchT(base() + path, opts, ms);
+    } catch (e) {
+      const local = /localhost|127\.0\.0\.1/.test(base());
+      if (!local || base() === DEPLOYED_API) throw e;
+      window.PHD_API_BASE = DEPLOYED_API;
+      return fetchT(DEPLOYED_API + path, opts, ms);
+    }
+  }
+
+  // Paste `await CoachAPI.diagnose()` in the console. "Can't reach the server"
+  // covers a wrong base URL, a blocked origin, an expired token and a real
+  // outage — this says which one, instead of leaving it to guesswork.
+  async function diagnose() {
+    const out = {
+      apiBase: base(),
+      origin: typeof location !== "undefined" ? location.origin : "(none)",
+      hasToken: !!token(),
+      tokenKind: token() === "demo-token" ? "demo (never syncs)" : token() ? "real" : "none",
+      build: "timeout-failover-20260728"
+    };
+    try {
+      const res = await fetchT(base() + "/api/wellness/summary", { headers: authHeaders() }, 15000);
+      out.reachable = true;
+      out.status = res.status;
+      out.verdict = res.status === 200 ? "OK — the API is reachable and the token works."
+        : res.status === 401 || res.status === 403 ? "Reached the API, but the token was rejected. Sign out and back in."
+        : `Reached the API; it answered ${res.status}.`;
+    } catch (e) {
+      out.reachable = false;
+      out.error = `${e.name}: ${e.message}`;
+      out.verdict = e.timeout
+        ? "The request timed out — the API is asleep or very slow."
+        : /localhost|127\.0\.0\.1/.test(base())
+          ? "Pointed at a local backend that isn't running. Start uvicorn, or set localStorage['phd-api-base'] to the deployed API."
+          : "The request never got a response: offline, DNS, a blocked origin (CORS), or a browser extension. Check the Network tab for the failed request.";
+    }
+    console.table ? console.table(out) : console.log(out);
+    return out;
+  }
+
   async function jsonOrThrow(res) {
     let data = null;
     try { data = await res.json(); } catch (e) {}
@@ -536,13 +602,13 @@
 
   // ---- Wellness -------------------------------------------------------------
   async function wellnessCheckin(payload) {
-    const res = await fetch(`${base()}/api/wellness/checkin`, {
+    const res = await apiFetch("/api/wellness/checkin", {
       method: "POST", headers: authHeaders(), body: JSON.stringify(payload || {})
-    });
+    }, 20000);
     return jsonOrThrow(res);
   }
   async function wellnessSummary() {
-    const res = await fetch(`${base()}/api/wellness/summary`, { headers: authHeaders() });
+    const res = await apiFetch("/api/wellness/summary", { headers: authHeaders() }, 15000);
     return jsonOrThrow(res);
   }
   async function wellnessHistory(days = 30) {
@@ -550,9 +616,10 @@
     return jsonOrThrow(res);
   }
   async function insightsBrain(context = {}, force = false) {
-    const res = await fetch(`${base()}/api/insights/brain`, {
+    // Composition runs a model pass, so it gets a long leash — but still a leash.
+    const res = await apiFetch("/api/insights/brain", {
       method: "POST", headers: authHeaders(), body: JSON.stringify({ context, force })
-    });
+    }, 60000);
     return jsonOrThrow(res);
   }
   async function wellnessInsight(context = {}, force = false) {
@@ -609,7 +676,7 @@
   }
 
   window.CoachAPI = {
-    base, token, isAuthed, setAuth, clearAuth, getUser, getRawUser: rawUser, initialsFor,
+    base, token, isAuthed, setAuth, clearAuth, getUser, getRawUser: rawUser, initialsFor, diagnose,
     login, signup, demoAuth, getConfig,
     listSessions, createSession, getSession, renameSession, deleteSession, truncateMessages, uploadDocument, saveMessage, switchChat, newChat,
     streamChat, replyToAdvisor,

@@ -57,6 +57,12 @@ function WellSlider({ label, value, onChange, lowLabel, highLabel }) {
 
 function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
   const authed = window.CoachAPI && window.CoachAPI.isAuthed && window.CoachAPI.isAuthed();
+  // isAuthed() only means "a token exists" — and the demo token is a token. A
+  // demo session has no account behind it, so every sync 401s; asking it to try
+  // just produces a scary error on a page whose whole job is to lower the
+  // temperature. Demo check-ins live on the device, quietly and correctly.
+  const isDemo = !!(window.CoachAPI && window.CoachAPI.token && window.CoachAPI.token() === "demo-token");
+  const syncable = authed && !isDemo;
   const [local, setLocal] = useSW(() => HW.loadJSON(WELLNESS_KEY, { checkins: [] }));
   useEW(() => HW.saveJSON(WELLNESS_KEY, local), [local]);
 
@@ -131,7 +137,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
 
   const fetchInsight = async (sum, force) => {
     setInsightBusy(true);
-    if (authed) {
+    if (syncable) {
       try { setInsight(await window.CoachAPI.wellnessInsight(planContext(), !!force)); setInsightBusy(false); return; } catch (e) {}
     }
     setInsight(localInsight(sum || summary || localSummary()));
@@ -140,7 +146,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
 
   const refresh = async () => {
     let sum = null;
-    if (authed) { try { sum = await window.CoachAPI.wellnessSummary(); } catch (e) {} }
+    if (syncable) { try { sum = await window.CoachAPI.wellnessSummary(); } catch (e) {} }
     if (!sum) sum = localSummary();
     setSummary(sum);
   };
@@ -155,16 +161,59 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
       work_hours: work === "" ? null : Number(work),
       note: note.trim(),
     };
+    // The device copy is written first and unconditionally — whatever the server
+    // does next, the check-in is never lost.
     setLocal(l => ({ checkins: [...(l.checkins || []).filter(c => c.date !== todayKey), { ...payload, date: todayKey, ts: Date.now() }] }));
     let sum = null;
-    if (authed) {
-      try { const r = await window.CoachAPI.wellnessCheckin(payload); sum = r && r.summary; }
-      catch (e) { setErr("Couldn't reach the server — your check-in is saved on this device."); }
+    // try/finally: whatever the network does, the button stops saying "Saving…".
+    // It previously awaited a fetch with no deadline, so an unanswered request
+    // left it spinning with no way out.
+    try {
+      if (syncable) {
+        try {
+          sum = (await window.CoachAPI.wellnessCheckin(payload) || {}).summary;
+        } catch (e) {
+          // A rejection, a timeout and an unreachable host are three different
+          // problems. The old copy blamed the network for all of them.
+          console.warn("[wellbeing] check-in first attempt failed:", e);
+          if (e && (e.status === 401 || e.status === 403)) {
+            setErr("Your session expired — sign in again to sync. This check-in is saved on this device.");
+          } else if (e && e.status) {
+            setErr(`The server declined this check-in (${e.status}: ${e.message || "no detail"}). It's saved on this device.`);
+          } else {
+            // No status = it never landed. The API sleeps when idle, so one
+            // retry catches a cold start; the call is time-boxed either way.
+            try {
+              sum = (await window.CoachAPI.wellnessCheckin(payload) || {}).summary;
+              setErr("");
+            } catch (e2) {
+              // Never swallow the cause. Anything without a status lands here —
+              // including plain JS errors — and reporting all of them as "can't
+              // reach the server" hid what was actually wrong.
+              console.warn("[wellbeing] check-in sync failed:", e2);
+              // "Failed to fetch" means the request never left the browser. The
+              // API being reachable from the same machine (curl/another tab)
+              // narrows that to something local: an extension blocking requests,
+              // a VPN, or an offline network. Say so, rather than implying the
+              // server is down when it isn't.
+              const blocked = e2 && e2.name === "TypeError" && /failed to fetch|networkerror|load failed/i.test(e2.message || "");
+              setErr(e2 && e2.timeout
+                ? "The server is waking up and didn't answer in time. Your check-in is saved on this device — log it again in a minute to sync it."
+                : blocked
+                  ? "The request was blocked before it left your browser — usually an extension (ad-blocker, autofill, privacy tool) or a VPN. Try an incognito window. Your check-in is saved on this device."
+                  : `Couldn't sync this check-in (${(e2 && (e2.name || "")) + (e2 && e2.message ? ": " + e2.message : "unknown error")}). It's saved on this device.`);
+            }
+          }
+        }
+      }
+    } finally {
+      if (!sum) sum = localSummary();
+      setSummary(sum);
+      setSaving(false); setSavedFlash(true); setNote("");
+      setTimeout(() => setSavedFlash(false), 3000);
+      // Insights ranks on these numbers — let it recompose in the background.
+      try { window.dispatchEvent(new CustomEvent("phd-checkin-logged")); } catch (e) {}
     }
-    if (!sum) sum = localSummary();
-    setSummary(sum);
-    setSaving(false); setSavedFlash(true); setNote("");
-    setTimeout(() => setSavedFlash(false), 3000);
   };
 
   const s = summary;

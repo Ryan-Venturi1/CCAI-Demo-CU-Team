@@ -112,6 +112,8 @@ function saveToDocuments({ id, name, content, source, audioDataUrl }) {
   };
   if (!store.activeId) store.activeId = docId;
   saveLS(DOCS_STORE_KEY, store);
+  // Insights composes partly from the shelf; a new document invalidates it.
+  try { window.dispatchEvent(new CustomEvent("phd-document-saved")); } catch (e) {}
   return docId;
 }
 const fmtDay = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return iso; } };

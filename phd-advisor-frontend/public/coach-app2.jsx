@@ -883,7 +883,7 @@ const HELP_FAQ = [
   ["How do I simplify my home screen?", "Set Display density to “Just what I need” in Settings."],
   ["Something went wrong with my research", "Use “Something came up?” on Home or My Plan — describe it in plain words and your plan re-routes around it."],
   ["Are my conversations private?", "Choose on-device / private models in Settings to keep processing local (slightly lower accuracy)."],
-  ["How do I get every feature right now?", "Settings → Feature unlocks → Reveal everything now."]
+  ["Is anything locked?", "No — every feature is available from the moment you sign in."]
 ];
 const SETTINGS_INSTITUTIONS = window.UNIVERSITY_OPTIONS || [];
 const SETTINGS_PROGRAMS = window.PROGRAM_OPTIONS || [];
@@ -1081,16 +1081,15 @@ function HelpCenter({ onClose, onReplayTour }) {
   );
 }
 
-function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs = {}, setPrefs, engagement = {}, unlocked = {}, onRevealAll, onResetDrip, onToggleHidden, onRebuild, onLoadTemplate, onReplayOnboarding, onSignOut }) {
+function SettingsView({ roadmap = null, setRoadmap, prefs = {}, setPrefs, onRebuild, onLoadTemplate, onReplayOnboarding, onSignOut }) {
   const [help, setHelp] = useS2(false);
   const currentInstitution = prefs.institution || roadmap?.program?.institution || "";
   const currentProgram = prefs.program || roadmap?.program?.name || "";
-  const densityChoice = prefs.revealAll ? "everything" : (prefs.density === "focused" ? "minimal" : "balanced");
-  const chooseDensity = (c) => {
-    if (c === "everything") { setPrefs && setPrefs(p => ({ ...p, density: "full" })); onRevealAll && onRevealAll(); }
-    else if (c === "balanced") { setPrefs && setPrefs(p => ({ ...p, density: "full", revealAll: false })); }
-    else { setPrefs && setPrefs(p => ({ ...p, density: "focused", revealAll: false })); }
-  };
+  // Density is purely how much shows at once now — it no longer gates features.
+  const densityChoice = prefs.density === "focused" ? "minimal" : prefs.density === "roomy" ? "everything" : "balanced";
+  const chooseDensity = (c) => setPrefs && setPrefs(p => ({
+    ...p, density: c === "minimal" ? "focused" : c === "everything" ? "roomy" : "full"
+  }));
   const setModel = (m) => setPrefs && setPrefs(p => ({ ...p, modelMode: m }));
   const saveAcademic = (key, value) => {
     const clean = value || "";
@@ -1101,9 +1100,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
       return { ...r, program: { ...program, [key === "program" ? "name" : "institution"]: clean } };
     });
   };
-  // "skills" omitted — the Skills page is temporarily hidden for beta.
-  const unlockRows = [["multiple", "Compare advisors (Multiple mode)", "after 1 message", 1], ["personas10", "All 10 advisors", "after 15 messages", 15]];
-
   return (
     <div className="page page-narrow">
       <div className="greeting"><h1 className="display" style={{ fontSize: 26 }}>Settings</h1><div className="sub">Make it yours.</div></div>
@@ -1162,31 +1158,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
         </div>
       </div>
 
-      {/* Feature unlocks */}
-      <div className="card card-pad" style={{ marginBottom: 16 }}>
-        <div className="card-h"><span className="ico"><Ico name="Sparkles" size={14} /></span> Feature unlocks</div>
-        <div style={{ fontSize: 12.5, color: "var(--text-2)", margin: "2px 0 10px" }}>Advanced features open up as you use Chat ({engagement.messages || 0} messages so far).</div>
-        {unlockRows.map(([id, label, when, thr]) => {
-          const hidden = (prefs.hidden || []).includes(id);
-          const reached = prefs.revealAll || (engagement.messages || 0) >= thr;
-          const icon = hidden ? "EyeOff" : (unlocked[id] ? "CheckCircle2" : "Lock");
-          const color = hidden ? "var(--amber)" : (unlocked[id] ? "var(--sage)" : "var(--text-3)");
-          return (
-            <div key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }}>
-              <Ico name={icon} size={14} color={color} />
-              <span style={{ flex: 1 }}>{label}</span>
-              {reached
-                ? <button className="btn sm ghost" onClick={() => onToggleHidden && onToggleHidden(id)}>{hidden ? <><Ico name="Eye" size={13} /> Activate</> : <><Ico name="EyeOff" size={13} /> Hide</>}</button>
-                : <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{when}</span>}
-            </div>
-          );
-        })}
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          {!prefs.revealAll && <button className="btn sm primary" onClick={onRevealAll}><Ico name="Unlock" size={14} color="#fff" /> Reveal everything now</button>}
-          <button className="btn sm" onClick={onResetDrip}><Ico name="RefreshCw" size={14} /> Reset the drip</button>
-        </div>
-      </div>
-
       {/* Help */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="card-h"><span className="ico"><Ico name="LifeBuoy" size={14} /></span> Help &amp; learning</div>
@@ -1197,18 +1168,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--border)" }}>
           <div><div style={{ fontWeight: 600, fontSize: 14 }}>Replay welcome tour</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>Walk through what each page does again</div></div>
           <button className="btn sm" onClick={onReplayOnboarding}><Ico name="Rocket" size={14} /> Take the tour</button>
-        </div>
-      </div>
-
-      {/* Appearance */}
-      <div className="card card-pad" style={{ marginBottom: 16 }}>
-        <div className="card-h"><span className="ico"><Ico name="Palette" size={14} /></span> Appearance</div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0" }}>
-          <div><div style={{ fontWeight: 600, fontSize: 14 }}>Theme</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>Warm light or cozy dark</div></div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className={`btn sm ${theme === "light" ? "primary" : ""}`} onClick={() => theme !== "light" && onToggleTheme()}><Ico name="Sun" size={14} color={theme==="light"?"#fff":undefined} /> Light</button>
-            <button className={`btn sm ${theme === "dark" ? "primary" : ""}`} onClick={() => theme !== "dark" && onToggleTheme()}><Ico name="Moon" size={14} color={theme==="dark"?"#fff":undefined} /> Dark</button>
-          </div>
         </div>
       </div>
 
@@ -1443,7 +1402,7 @@ function CraftToolModal({ stepTitle, onClose, onCreated }) {
 // ============================================================================
 // COMMAND PALETTE (⌘K) — jump anywhere, or type to capture a note/deadline.
 // ============================================================================
-function CommandPalette({ onClose, onNav, onSos, onToggleTheme, onReplayTour, onToast, skillsUnlocked = true }) {
+function CommandPalette({ onClose, onNav, onSos, onReplayTour, onToast, skillsUnlocked = true }) {
   const [q, setQ] = useS2("");
   const inputRef = useR2(null);
   useE2(() => { inputRef.current && inputRef.current.focus(); }, []);
@@ -1458,7 +1417,6 @@ function CommandPalette({ onClose, onNav, onSos, onToggleTheme, onReplayTour, on
     { id: "act-newchat", label: "Start a new chat", icon: "Plus", run: () => { onNav("chat"); onClose(); } },
     { id: "act-help", label: "Help / get unstuck", icon: "LifeBuoy", run: () => { onNav("settings"); onClose(); } },
     { id: "act-sos", label: "Something came up (re-plan)", icon: "LifeBuoy", run: () => { onSos(); onClose(); } },
-    { id: "act-theme", label: "Toggle light / dark theme", icon: "Moon", run: () => { onToggleTheme(); onClose(); } },
     { id: "act-tour", label: "Replay the welcome tour", icon: "Rocket", run: () => { onReplayTour(); onClose(); } }
   ];
   const ql = q.trim().toLowerCase();
@@ -1543,7 +1501,9 @@ function CoachRoot() {
   if (window.CoachAPI && window.CoachAPI.isAuthed()) window.MOCK_USER = window.CoachAPI.getUser();
   const [gate, setGate] = useS2("landing"); // landing | login
   const [view, setView] = useS2("home");
-  const [theme, setTheme] = useS2(() => { try { return localStorage.getItem(H.THEME_KEY) || "light"; } catch (e) { return "light"; } });
+  // One theme. Dark mode is gone as a user-facing option, so anyone carrying a
+  // stored "dark" preference gets snapped back rather than stranded in a palette
+  // nothing is being designed against any more.
   const [doneTasks, setDoneTasks] = useS2(() => new Set(H.loadJSON(H.TASK_KEY, [])));
   const [celebrate, setCelebrate] = useS2(null);
   const [sosOpen, setSosOpen] = useS2(false);
@@ -1580,13 +1540,13 @@ function CoachRoot() {
   const [rebuildProfile, setRebuildProfile] = useS2(null);
   // A feature is "on" once its message threshold is reached (or reveal-all) AND
   // the user hasn't chosen to keep it hidden.
-  const isHidden = (id) => (prefs.hidden || []).includes(id);
-  const reached = (thr) => prefs.revealAll || engagement.messages >= thr;
+  // Feature unlocks are retired: everything is on from the first visit. The
+  // engagement counter still ticks (Insights reads it), it just gates nothing.
   const unlocked = useM2(() => ({
-    multiple:   reached(1)  && !isHidden("multiple"),
+    multiple:   true,
     skills:     false, // Skills page temporarily hidden for beta
-    personas10: reached(15) && !isHidden("personas10")
-  }), [prefs.revealAll, prefs.hidden, engagement.messages]);
+    personas10: true
+  }), []);
   const focused = prefs.density === "focused";
   const bumpMessages = () => setEngagement(e => ({ ...e, messages: (e.messages || 0) + 1 }));
   const dismissUnlock = (id) => { setSeenUnlocks(s => s.includes(id) ? s : [...s, id]); setUnlockPopup(null); };
@@ -1595,7 +1555,7 @@ function CoachRoot() {
     setPrefs(p => ({ ...p, hidden: [...new Set([...(p.hidden || []), id])] }));
     setSeenUnlocks(s => s.includes(id) ? s : [...s, id]);
     setUnlockPopup(null);
-    setToast("Hidden for now — turn it back on anytime in Settings → Feature unlocks.");
+    setToast("Hidden for now.");
   };
   const toggleHidden = (id) => setPrefs(p => { const h = new Set(p.hidden || []); h.has(id) ? h.delete(id) : h.add(id); return { ...p, hidden: [...h] }; });
   const revealAllNow = () => { setPrefs(p => ({ ...p, revealAll: true, hidden: [] })); setSeenUnlocks(["multiple", "skills", "personas10"]); setUnlockPopup(null); };
@@ -1634,9 +1594,32 @@ function CoachRoot() {
     return () => window.removeEventListener("phd-open-chat", onOpenChat);
   }, []);
 
-  useE2(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem(H.THEME_KEY, theme); } catch (e) {} }, [theme]);
+  useE2(() => {
+    document.documentElement.dataset.theme = "light";
+    try { localStorage.removeItem(H.THEME_KEY); } catch (e) {}
+  }, []);
   useE2(() => { H.saveJSON(H.RM_KEY, roadmap); }, [roadmap]);
   useE2(() => { H.saveJSON(H.TASK_KEY, [...doneTasks]); }, [doneTasks]);
+
+  // Compose Insights in the background as soon as there's a plan to reason over,
+  // so opening the tab renders a finished page instead of a progress list. Held
+  // a couple of seconds so it never competes with the first paint, and it
+  // de-dupes itself, so re-running this is free.
+  useE2(() => {
+    if (!authed || !roadmap || !window.warmInsights) return;
+    const t = setTimeout(() => { try { window.warmInsights(roadmap, doneTasks); } catch (e) {} }, 2500);
+    return () => clearTimeout(t);
+  }, [authed, !!roadmap]);
+
+  // Anything that feeds the composition invalidates it. Recompose in the
+  // background; whoever is on Insights sees it swap in with no loading state.
+  useE2(() => {
+    if (!authed || !window.warmInsights) return;
+    const again = () => { if (roadmap) window.warmInsights(roadmap, doneTasks, true); };
+    const EVENTS = ["phd-checkin-logged", "phd-document-saved"];
+    EVENTS.forEach(e => window.addEventListener(e, again));
+    return () => EVENTS.forEach(e => window.removeEventListener(e, again));
+  }, [authed, roadmap, doneTasks]);
   // Best-effort backend backup of the plan + progress, so signing in from a new
   // browser restores the dashboard instead of re-running onboarding.
   useE2(() => {
@@ -1680,7 +1663,6 @@ function CoachRoot() {
     if (!done) { setView("home"); setShowTour(true); }
   }, [authed, !!roadmap]);
 
-  const toggleTheme = () => setTheme(t => t === "light" ? "dark" : "light");
 
   const handleReplan = (text) => {
     const res = RE2.replan(roadmap, text);
@@ -1804,13 +1786,19 @@ function CoachRoot() {
       onComplete={(rm, p) => { setRebuildProfile(null); setRoadmap(rm); if (p) setPrefs(prev => ({ ...prev, ...p })); setView("home"); }} />;
   }
 
-  const signOut = () => { if (window.CoachAPI) window.CoachAPI.clearAuth(); setRebuildProfile(null); setAuthed(false); setGate("landing"); setView("home"); };
+  const signOut = () => {
+    if (window.CoachAPI) window.CoachAPI.clearAuth();
+    // The warm Insights composition is this account's data — it must not survive
+    // into the next sign-in.
+    if (window.clearInsightsWarm) window.clearInsightsWarm();
+    setRebuildProfile(null); setAuthed(false); setGate("landing"); setView("home");
+  };
   // Sanitize view: Skills isn't reachable until unlocked, and Workspace is not
   // its own page — its tools live on Home (in the Tools popup), so redirect there.
   const v = (view === "skills" && !unlocked.skills) ? "home" : (view === "workspace" ? "home" : view);
 
   let body;
-  if (v === "home") body = <window.CoachDashboard roadmap={roadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} onNav={setView} onOpenSos={() => setSosOpen(true)} onOpenStep={openWorkspace} focused={focused} theme={theme} />;
+  if (v === "home") body = <window.CoachDashboard roadmap={roadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} onNav={setView} onOpenSos={() => setSosOpen(true)} onOpenStep={openWorkspace} focused={focused} />;
   // My Plan uses the V2 PlanView (the version deployed on main); the newer
   // spreadsheet (CoachPlanSheet) is retired while we redo this section.
   else if (v === "plan") body = <PlanView roadmap={roadmap} setRoadmap={setRoadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} touchStep={touchStep} onCelebrate={setCelebrate} onOpenSos={() => setSosOpen(true)} onAsk={askInChat} onNav={setView} onOpenStep={openWorkspace} skillsUnlocked={unlocked.skills} />;
@@ -1821,9 +1809,8 @@ function CoachRoot() {
   else if (v === "defense") body = <window.CoachDefenseRoom roadmap={roadmap} onNav={setView} onToast={setToast} />;
   else if (v === "documents") body = <window.CoachDocuments roadmap={roadmap} />;
   else if (v === "wellness") body = <window.CoachWellness onNav={setView} roadmap={roadmap} setRoadmap={setRoadmap} onToast={setToast} />;
-  else body = <SettingsView roadmap={roadmap} setRoadmap={setRoadmap} theme={theme} onToggleTheme={toggleTheme}
-    prefs={prefs} setPrefs={setPrefs} engagement={engagement} unlocked={unlocked}
-    onRevealAll={revealAllNow} onResetDrip={resetDrip} onToggleHidden={toggleHidden}
+  else body = <SettingsView roadmap={roadmap} setRoadmap={setRoadmap}
+    prefs={prefs} setPrefs={setPrefs}
     onRebuild={() => { if (confirm("Rebuild your plan from scratch? Progress clears.")) { setRebuildProfile(buildAcademicProfile(signedInUserProfile(), prefs, roadmap)); setRoadmap(null); setDoneTasks(new Set()); } }}
     onLoadTemplate={loadTemplatePlan}
     onReplayOnboarding={() => { setView("home"); setShowTour(true); }}
@@ -1841,7 +1828,6 @@ function CoachRoot() {
           </div>
           <div className="tb-r">
             <button className="btn sm" onClick={() => setPalette(true)} title="Command palette" aria-label="Open command palette"><Ico name="Search" size={15} /> Search</button>
-            <button className="btn icon sm" onClick={toggleTheme} title="Toggle theme" aria-label="Toggle light or dark theme"><Ico name={theme === "light" ? "Moon" : "Sun"} size={16} /></button>
             <button className="btn sm" onClick={() => setView("chat")}><Ico name="MessageCircle" size={15} /> Chat</button>
           </div>
         </div>
@@ -1904,7 +1890,6 @@ function CoachRoot() {
         onClose={() => setPalette(false)}
         onNav={setView}
         onSos={() => setSosOpen(true)}
-        onToggleTheme={toggleTheme}
         onReplayTour={() => { setView("home"); setShowTour(true); }}
         skillsUnlocked={unlocked.skills}
         onToast={setToast} />}

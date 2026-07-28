@@ -105,11 +105,13 @@
     const next = () => { if (isLast) finish(); else setI(i + 1); };
     const back = () => setI(Math.max(0, i - 1));
 
-    // When not running, offer a quiet "Page tips" pill so the walkthrough is replayable.
+    // When not running, the walkthrough sits behind a single question mark —
+    // the universal "what is this?" affordance, so it needs no label to read.
     if (!showing) {
       return (
-        <button className="ptour-replay" onClick={replay} title={`Replay the ${page} walkthrough`}>
-          <IcoPT name="Sparkles" size={13} /> Page tips
+        <button className="ptour-replay" onClick={replay}
+          title={`Replay the ${page} walkthrough`} aria-label={`Replay the ${page} walkthrough`}>
+          ?
         </button>
       );
     }

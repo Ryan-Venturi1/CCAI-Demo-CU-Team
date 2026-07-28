@@ -3,16 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- This file is the manifest: it names the ?v= build of every script below.
+       If it gets cached, the browser keeps asking for the OLD asset URLs and the
+       user runs a build that no longer exists — which looks exactly like "my fix
+       did nothing". Always revalidate it. -->
+  <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
   <title>PhD Navigator — know the path ahead</title>
   <script>
     /* Backend origin for auth + chat.
      *
      * The API is NOT on the same host as this static frontend, so it has to be
-     * named explicitly — and it differs by environment:
+     * named explicitly. Every environment starts on the deployed Render API;
+     * running `uvicorn` locally is what opts you out of it:
      *
-     *   localhost / 127.0.0.1  -> "" so coach-api.js falls back to <host>:8000,
-     *                             i.e. the backend you run locally (uvicorn).
-     *   anywhere else (Vercel) -> the deployed Render API.
+     *   any origin            -> the deployed Render API (always reachable)
+     *   localhost / 127.0.0.1 -> switches to <host>:8000 IF a local backend answers
      *
      * localStorage['phd-api-base'] still overrides both, which is handy for
      * pointing a deployed UI at a tunnel during a demo.
@@ -21,16 +26,28 @@
       var h = location.hostname;
       var isLocal = h === "localhost" || h === "127.0.0.1" || h === "";
       var RENDER_API = "https://phd-navigator-api.onrender.com";
-      window.PHD_API_BASE = isLocal ? "" : RENDER_API;
+
+      // Default to the deployed API EVERYWHERE, including localhost.
+      //
+      // This used to be the other way round: local dev started with an empty
+      // base (so requests went to <host>:8000) and only fell back to Render
+      // once a probe had rejected. That's a race — anything the user did
+      // before the probe settled hit a dead port and reported itself as
+      // "can't reach the server", which is how a working API looked broken.
+      //
+      // Now the reliable target is the default and the local backend is the
+      // opt-in: if something answers on :8000 we switch to it, and until then
+      // nothing is in a broken state.
+      window.PHD_API_BASE = RENDER_API;
       if (isLocal) {
-        // No backend on :8000? Fall back to the deployed API so every AI
-        // feature still works when someone runs the static frontend alone.
-        // (Any HTTP response — even 401 — means the local backend is up;
-        // only a network error rejects.)
         try {
-          var probe = (location.protocol === "https:" ? "https:" : "http:") + "//" + (h || "localhost") + ":8000/";
-          fetch(probe, { method: "GET" }).catch(function () { window.PHD_API_BASE = RENDER_API; });
-        } catch (e) { window.PHD_API_BASE = RENDER_API; }
+          var proto = location.protocol === "https:" ? "https:" : "http:";
+          var localApi = proto + "//" + (h || "localhost") + ":8000";
+          // Any HTTP response — even 401 — means a backend is there.
+          fetch(localApi + "/", { method: "GET" })
+            .then(function () { window.PHD_API_BASE = localApi; })
+            .catch(function () { /* stay on the deployed API */ });
+        } catch (e) { /* stay on the deployed API */ }
       }
     })();
   </script>
@@ -38,7 +55,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <!-- IBM Plex Mono renders insights.md — the markdown the Insights page is composed from. -->
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="coach-styles.css?v=ix-strip-20260728b" />
+  <link rel="stylesheet" href="coach-styles.css?v=help-mark-20260728" />
 </head>
 <body>
   <div id="root"></div>
@@ -99,13 +116,13 @@
   <script src="roadmap-engine.js?v=direct-handbook-network-20260713"></script>
 
   <!-- Real backend wiring (auth, streaming chat, sessions). Defines window.CoachAPI. -->
-  <script src="coach-api.js?v=brain-20260722"></script>
+  <script src="coach-api.js?v=diagnose-20260728"></script>
 
   <!-- Shared Icon helper (must run before the tools module) -->
   <script type="text/babel" src="coach-shared.jsx?v=academic-combo-20260624" data-presets="react"></script>
 
   <!-- Functional persistent tools (notes, tasks, reading, pomodoro, bib) -->
-  <script type="text/babel" src="canvas-tools.jsx?v=meet-calendar-20260728" data-presets="react"></script>
+  <script type="text/babel" src="canvas-tools.jsx?v=warm-20260728" data-presets="react"></script>
 
   <!-- Committee Builder (chair helper + match scoring) -->
   <script type="text/babel" src="coach-committee.jsx" data-presets="react"></script>
@@ -118,7 +135,7 @@
 
   <!-- Insights / Workspace / Documents. Insights composes itself from the
        backend's scored candidate library; insights.md is what it renders. -->
-  <script type="text/babel" src="coach-views.jsx?v=ix-strip-20260728b" data-presets="react"></script>
+  <script type="text/babel" src="coach-views.jsx?v=warm-demo-20260728" data-presets="react"></script>
 
   <!-- Chat v3 — personas + skills in composer, single/multiple toggle, skill actions -->
   <script type="text/babel" src="coach-chat.jsx?v=committee-chat-20260720" data-presets="react"></script>
@@ -133,13 +150,13 @@
   <script type="text/babel" src="coach-tour.jsx" data-presets="react"></script>
 
   <!-- Per-page first-view walkthroughs (Documents / Insights / Skills / Defense) -->
-  <script type="text/babel" src="coach-page-tours.jsx?v=ins-tour-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-page-tours.jsx?v=help-mark-20260728" data-presets="react"></script>
 
   <!-- Wellbeing page — daily check-ins, burnout signal, resources -->
-  <script type="text/babel" src="coach-wellness.jsx?v=quiet-checker-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-wellness.jsx?v=blocked-hint-20260728" data-presets="react"></script>
   <script type="text/babel" src="coach-meetings.jsx?v=cadence-card-20260728" data-presets="react"></script>
 
   <!-- App: plan/step, recovery, chat, settings, router + mount -->
-  <script type="text/babel" src="coach-app2.jsx?v=plan-caret-20260728b" data-presets="react"></script>
+  <script type="text/babel" src="coach-app2.jsx?v=warm-20260728" data-presets="react"></script>
 </body>
 </html>
