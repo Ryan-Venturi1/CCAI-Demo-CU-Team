@@ -990,7 +990,7 @@ function GroundingDetails({ grounding, onOpenDocument }) {
 }
 
 // ============================================================================
-function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey = 0, onFreshChatConsumed, onSeedConsumed, unlocked = { multiple: true, skills: true, personas10: true }, onMessage, savedChatTarget, onSavedChatConsumed, onOpenPlanItem }) {
+function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey = 0, onFreshChatConsumed, onSeedConsumed, unlocked = { skills: true }, onMessage, savedChatTarget, onSavedChatConsumed, onOpenPlanItem }) {
   const defaultStep = roadmap.steps.find(s => s.status === "current") || roadmap.steps.find(s => s.status === "redo") || roadmap.steps[0];
   const current = defaultStep;
   const [messages, setMessages] = useSC([]);
@@ -1867,7 +1867,7 @@ function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey
           )}
           <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Ask PhD Navigator..." />
           <div className="ci-row">
-            <div className="composer-tools">
+            <div data-ptour="chat-tools" className="composer-tools">
               <button className="composer-btn" onClick={() => fileRef.current && fileRef.current.click()} title="Attach documents"><IcoC name="Paperclip" size={15} /> Attach</button>
             </div>
 

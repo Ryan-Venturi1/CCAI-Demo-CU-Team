@@ -87,7 +87,7 @@ function CoachMeetings({ onToast }) {
           <h1 className="display" style={{ fontSize: 26 }}>Meeting Notes</h1>
           <div className="sub">Record it, upload it, or paste your notes — the AI writes the transcript, summary, and action items.</div>
         </div>
-        <label className="meetp-cadence">
+        <label className="meetp-cadence" data-ptour="meet-cadence">
           <IcoM name="Repeat" size={13} /> Remind me to meet my advisor
           <select value={cadence.days || 0} onChange={e => setCadence({ days: Number(e.target.value) })}>
             <option value={0}>off</option>
@@ -96,7 +96,7 @@ function CoachMeetings({ onToast }) {
             <option value={60}>every 60 days</option>
           </select>
         </label>
-        <button className="btn primary sm" onClick={() => setEditing("new")}><IcoM name="Plus" size={14} color="#fff" /> New meeting</button>
+        <button className="btn primary sm" data-ptour="meet-new" onClick={() => setEditing("new")}><IcoM name="Plus" size={14} color="#fff" /> New meeting</button>
       </div>
 
       {overdue && (
@@ -151,7 +151,8 @@ function CoachMeetings({ onToast }) {
           const acts = (m.actions || []).map(a => (typeof a === "string" ? { text: a } : a));
           const openActs = acts.filter(a => !a.done).length;
           return (
-            <div key={m.id} className={`meetp-card ${open ? "open" : ""}`}>
+            <div key={m.id} data-ptour={sorted[0] && m.id === sorted[0].id ? "meet-list" : undefined}
+              className={`meetp-card ${open ? "open" : ""}`}>
               <button className="meetp-row" onClick={() => setOpenId(open ? null : m.id)}>
                 <span className="meetp-ico"><IcoM name="MessageSquare" size={15} /></span>
                 <span className="meetp-t">

@@ -33,15 +33,6 @@ const PRACTICE_DETAILS = {
   "Engineer the advisor relationship": { time: "30-60 min/week", do_this: "A standing meeting with a sent agenda — progress, blockers, one decision needed. Once a semester, negotiate expectations explicitly.", why: "Levecque et al. 2017 (3,659 PhD students): supervision factors are the strongest work predictors of PhD mental health." },
 };
 
-const SUPPORT_LINKS = [
-  { name: "988 (call/text)", url: "https://988lifeline.org/", tag: "crisis" },
-  { name: "Grad Crisis Line 1-877-472-3457", url: "https://gradresources.org/crisis/", tag: "crisis" },
-  { name: "International helplines", url: "https://findahelpline.com/", tag: "crisis" },
-  { name: "Free anonymous screening", url: "https://screening.mhanational.org/screening-tools/", tag: "check" },
-  { name: "Dragonfly Cafes", url: "https://dragonflymentalhealth.org/", tag: "community" },
-  { name: "PhD Balance", url: "https://www.phdbalance.com/", tag: "community" },
-  { name: "The Wellbeing Thesis", url: "https://thewellbeingthesis.org.uk/", tag: "read" },
-];
 
 const DISCLAIMER = "Check-ins help you notice patterns — they can't diagnose anything, and this app isn't a substitute for professional care. If something feels wrong, trust that feeling and talk to a counselor or doctor.";
 
@@ -57,6 +48,12 @@ function WellSlider({ label, value, onChange, lowLabel, highLabel }) {
 
 function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
   const authed = window.CoachAPI && window.CoachAPI.isAuthed && window.CoachAPI.isAuthed();
+  // isAuthed() only means "a token exists" — and the demo token is a token. A
+  // demo session has no account behind it, so every sync 401s; asking it to try
+  // just produces a scary error on a page whose whole job is to lower the
+  // temperature. Demo check-ins live on the device, quietly and correctly.
+  const isDemo = !!(window.CoachAPI && window.CoachAPI.token && window.CoachAPI.token() === "demo-token");
+  const syncable = authed && !isDemo;
   const [local, setLocal] = useSW(() => HW.loadJSON(WELLNESS_KEY, { checkins: [] }));
   useEW(() => HW.saveJSON(WELLNESS_KEY, local), [local]);
 
@@ -131,7 +128,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
 
   const fetchInsight = async (sum, force) => {
     setInsightBusy(true);
-    if (authed) {
+    if (syncable) {
       try { setInsight(await window.CoachAPI.wellnessInsight(planContext(), !!force)); setInsightBusy(false); return; } catch (e) {}
     }
     setInsight(localInsight(sum || summary || localSummary()));
@@ -140,7 +137,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
 
   const refresh = async () => {
     let sum = null;
-    if (authed) { try { sum = await window.CoachAPI.wellnessSummary(); } catch (e) {} }
+    if (syncable) { try { sum = await window.CoachAPI.wellnessSummary(); } catch (e) {} }
     if (!sum) sum = localSummary();
     setSummary(sum);
   };
@@ -155,16 +152,59 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
       work_hours: work === "" ? null : Number(work),
       note: note.trim(),
     };
+    // The device copy is written first and unconditionally — whatever the server
+    // does next, the check-in is never lost.
     setLocal(l => ({ checkins: [...(l.checkins || []).filter(c => c.date !== todayKey), { ...payload, date: todayKey, ts: Date.now() }] }));
     let sum = null;
-    if (authed) {
-      try { const r = await window.CoachAPI.wellnessCheckin(payload); sum = r && r.summary; }
-      catch (e) { setErr("Couldn't reach the server — your check-in is saved on this device."); }
+    // try/finally: whatever the network does, the button stops saying "Saving…".
+    // It previously awaited a fetch with no deadline, so an unanswered request
+    // left it spinning with no way out.
+    try {
+      if (syncable) {
+        try {
+          sum = (await window.CoachAPI.wellnessCheckin(payload) || {}).summary;
+        } catch (e) {
+          // A rejection, a timeout and an unreachable host are three different
+          // problems. The old copy blamed the network for all of them.
+          console.warn("[wellbeing] check-in first attempt failed:", e);
+          if (e && (e.status === 401 || e.status === 403)) {
+            setErr("Your session expired — sign in again to sync. This check-in is saved on this device.");
+          } else if (e && e.status) {
+            setErr(`The server declined this check-in (${e.status}: ${e.message || "no detail"}). It's saved on this device.`);
+          } else {
+            // No status = it never landed. The API sleeps when idle, so one
+            // retry catches a cold start; the call is time-boxed either way.
+            try {
+              sum = (await window.CoachAPI.wellnessCheckin(payload) || {}).summary;
+              setErr("");
+            } catch (e2) {
+              // Never swallow the cause. Anything without a status lands here —
+              // including plain JS errors — and reporting all of them as "can't
+              // reach the server" hid what was actually wrong.
+              console.warn("[wellbeing] check-in sync failed:", e2);
+              // "Failed to fetch" means the request never left the browser. The
+              // API being reachable from the same machine (curl/another tab)
+              // narrows that to something local: an extension blocking requests,
+              // a VPN, or an offline network. Say so, rather than implying the
+              // server is down when it isn't.
+              const blocked = e2 && e2.name === "TypeError" && /failed to fetch|networkerror|load failed/i.test(e2.message || "");
+              setErr(e2 && e2.timeout
+                ? "The server is waking up and didn't answer in time. Your check-in is saved on this device — log it again in a minute to sync it."
+                : blocked
+                  ? "The request was blocked before it left your browser — usually an extension (ad-blocker, autofill, privacy tool) or a VPN. Try an incognito window. Your check-in is saved on this device."
+                  : `Couldn't sync this check-in (${(e2 && (e2.name || "")) + (e2 && e2.message ? ": " + e2.message : "unknown error")}). It's saved on this device.`);
+            }
+          }
+        }
+      }
+    } finally {
+      if (!sum) sum = localSummary();
+      setSummary(sum);
+      setSaving(false); setSavedFlash(true); setNote("");
+      setTimeout(() => setSavedFlash(false), 3000);
+      // Insights ranks on these numbers — let it recompose in the background.
+      try { window.dispatchEvent(new CustomEvent("phd-checkin-logged")); } catch (e) {}
     }
-    if (!sum) sum = localSummary();
-    setSummary(sum);
-    setSaving(false); setSavedFlash(true); setNote("");
-    setTimeout(() => setSavedFlash(false), 3000);
   };
 
   const s = summary;
@@ -180,8 +220,6 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
     days.push({ key, mood: c ? c.mood : null, label: d.toLocaleDateString(undefined, { weekday: "narrow" }) });
   }
 
-  const inst = (window.CoachAPI && window.CoachAPI.getUser && window.CoachAPI.getUser().institution) || "";
-  const campusUrl = `https://www.google.com/search?q=${encodeURIComponent((inst || "my university") + " counseling center appointment")}`;
 
   const showSupport = () => {
     setSupportGlow(true);
@@ -348,7 +386,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
 
       <div className="well-grid">
         {/* ---- Check-in (compact) ---- */}
-        <div className="well-card">
+        <div className="well-card" data-ptour="well-checkin">
           <div className="well-card-h"><IcoW name="Heart" size={16} color="#EC4899" /> {s && s.today_logged ? "Update today" : "Today's check-in"}
             {s && s.streak > 1 && <span className="chip" style={{ marginLeft: "auto" }}>🔥 {s.streak} days</span>}
           </div>
@@ -372,7 +410,7 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
               <textarea className="well-note" placeholder="Anything on your mind? Your coach reads this." value={note} onChange={e => setNote(e.target.value)} rows={2} />
             </>
           )}
-          {err && <div className="doc-upload-err" style={{ marginBottom: 8 }}><IcoW name="AlertTriangle" size={14} /> {err}</div>}
+          {err && <div className="doc-upload-err" data-page-error style={{ marginBottom: 8 }}><IcoW name="AlertTriangle" size={14} /> {err}</div>}
           <button className="btn primary" style={{ width: "100%", justifyContent: "center" }} disabled={saving} onClick={submit}>
             {saving ? <><IcoW name="Loader" size={15} className="spin" color="#fff" /> Saving…</> : savedFlash ? <><IcoW name="Check" size={15} color="#fff" /> Logged.</> : <><IcoW name="Heart" size={15} color="#fff" /> Log check-in</>}
           </button>
@@ -410,11 +448,9 @@ function CoachWellness({ onNav, roadmap, setRoadmap, onToast }) {
       </div>
 
       {/* ---- Support: one quiet row (glows when the insight points here) ---- */}
-      <div ref={supportRef} className={`well-support ${level === "high" || supportGlow ? "urgent" : ""}`}>
-        <span className="well-support-l"><IcoW name="LifeBuoy" size={13} /> Need more than a nudge?</span>
-        <a className="well-support-a" href={campusUrl} target="_blank" rel="noreferrer" title="Usually free, confidential, and used to PhD problems"><IcoW name="Building2" size={12} /> {inst ? `${inst} counseling` : "Campus counseling"}</a>
-        {SUPPORT_LINKS.map((l, i) => <a key={i} className="well-support-a" href={l.url} target="_blank" rel="noreferrer">{l.name}</a>)}
-      </div>
+      {window.SupportRow
+        ? <window.SupportRow innerRef={supportRef} urgent={level === "high" || supportGlow} />
+        : null}
       <div className="well-disclaimer" style={{ marginTop: 10 }}><IcoW name="Info" size={13} /> {DISCLAIMER}</div>
     </div>
   );

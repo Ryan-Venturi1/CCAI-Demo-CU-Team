@@ -1101,10 +1101,10 @@ function MeetingEditor({ meeting, onSave, onDelete, onClose }) {
             </label>
           </div>
 
-          <MeetingCalendarRow m={m} onFlash={setFlash} />
+          <div data-ptour="meet-cal"><MeetingCalendarRow m={m} onFlash={setFlash} /></div>
 
           {/* Record the meeting → Gemini writes the transcript, notes, and action items */}
-          <div className="meet-rec">
+          <div className="meet-rec" data-ptour="meet-record">
             <button className={`btn sm ${recOn ? "primary" : ""} meet-rec-btn ${recOn ? "rec" : ""}`} onClick={toggleRec} disabled={analyzing}>
               <IconT name={recOn ? "Square" : "Mic"} size={14} color={recOn ? "#fff" : undefined} />
               {recOn ? `Stop recording · ${fmtSecs(recSecs)}` : audioBlob ? "Re-record" : "Record meeting"}
@@ -1123,7 +1123,7 @@ function MeetingEditor({ meeting, onSave, onDelete, onClose }) {
           </div>
           {flashEl}
 
-          <div className="section-label" style={{ display: "flex", alignItems: "center" }}>
+          <div className="section-label" data-ptour="meet-agenda" style={{ display: "flex", alignItems: "center" }}>
             <span className="ic"><IconT name="ListChecks" size={13} /></span> Agenda
             <button className="tool-chip-btn on" style={{ marginLeft: "auto" }} onClick={draftWithAI} disabled={aiBusy}>
               <IconT name={aiBusy ? "Loader" : "Sparkles"} size={12} className={aiBusy ? "spin" : ""} /> AI draft from where I am
@@ -1145,7 +1145,7 @@ function MeetingEditor({ meeting, onSave, onDelete, onClose }) {
           </div>
 
           <div className="section-label"><span className="ic"><IconT name="PenLine" size={13} /></span> Meeting notes <span style={{ fontWeight: 400, color: "var(--text-3)", textTransform: "none", letterSpacing: 0 }}>· saved to Documents and your advisors' memory</span></div>
-          <textarea className="meet-notes" value={m.notes} onChange={e => patch({ notes: e.target.value })}
+          <textarea className="meet-notes" data-ptour="meet-notes" value={m.notes} onChange={e => patch({ notes: e.target.value })}
             placeholder="What was discussed, decided, and promised… (or record the meeting above and let the AI write these)" />
           {(m.transcript || "").trim() && (
             <>
@@ -1156,7 +1156,7 @@ function MeetingEditor({ meeting, onSave, onDelete, onClose }) {
             </>
           )}
 
-          <div className="section-label" style={{ display: "flex", alignItems: "center" }}>
+          <div className="section-label" data-ptour="meet-actions" style={{ display: "flex", alignItems: "center" }}>
             <span className="ic"><IconT name="CheckSquare" size={13} /></span> Action items
             <button className="tool-chip-btn on" style={{ marginLeft: "auto" }} onClick={extractActions} disabled={actBusy}>
               <IconT name={actBusy ? "Loader" : "Wand2"} size={12} className={actBusy ? "spin" : ""} /> Action-item the meeting

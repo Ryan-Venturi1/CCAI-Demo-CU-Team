@@ -139,6 +139,112 @@
     return h;
   }
 
+  // fetch() has no default timeout, so a request that never gets a response
+  // never settles and whatever awaited it spins forever. The API sleeps when
+  // idle and a cold start can take tens of seconds, which is exactly when this
+  // bites. Every call that a human is waiting on should use this.
+  async function fetchT(url, opts, ms) {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = setTimeout(() => { try { ctrl && ctrl.abort(); } catch (e) {} }, ms || 20000);
+    try {
+      return await fetch(url, ctrl ? Object.assign({}, opts, { signal: ctrl.signal }) : opts);
+    } catch (e) {
+      if (e && e.name === "AbortError") {
+        const err = new Error("The server didn't respond in time.");
+        err.timeout = true;
+        throw err;
+      }
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+
+  const DEPLOYED_API = "https://phd-navigator-api.onrender.com";
+
+  // ---------------------------------------------------------------------------
+  // Same-origin first.
+  //
+  // Calling https://phd-navigator-api.onrender.com directly is a cross-origin
+  // request to a hostname that blockers pattern-match — `*.onrender.com` is on
+  // several ad-block/privacy lists because free hosting gets abused. When an
+  // extension matches it the request dies as `TypeError: Failed to fetch`
+  // before leaving the browser, and no app-side handling can recover it.
+  //
+  // So we ask our OWN origin first: /api/... is proxied to the backend by
+  // vercel.json (deployed) and src/setupProxy.js (dev). Nothing third-party to
+  // match, and no CORS exchange at all.
+  //
+  // If no proxy is configured the request comes back as the SPA's index.html
+  // (200, text/html) rather than failing — so that is treated as "no proxy
+  // here", remembered, and every later call goes direct.
+  // ---------------------------------------------------------------------------
+  let proxyMode = null;   // null = untested, true = proxy works, false = go direct
+
+  // Two ways "no proxy here" shows up: an SPA host rewrites /api to index.html
+  // (200 text/html), and a plain static host 404s it. Neither is the API.
+  const noProxyHere = (res) =>
+    res.status === 404 ||
+    (res.headers.get("content-type") || "").indexOf("text/html") !== -1;
+
+  async function apiFetch(path, opts, ms) {
+    if (proxyMode !== false && typeof location !== "undefined" && location.origin) {
+      try {
+        const res = await fetchT(location.origin + path, opts, ms);
+        if (!noProxyHere(res)) { proxyMode = true; return res; }
+        proxyMode = false;   // not the API answering — go direct from here on
+      } catch (e) {
+        // A same-origin request that fails outright means no proxy (dev server
+        // without setupProxy, or a static host). Fall through to direct.
+        proxyMode = false;
+      }
+    }
+
+    try {
+      return await fetchT(base() + path, opts, ms);
+    } catch (e) {
+      const local = /localhost|127\.0\.0\.1/.test(base());
+      if (!local || base() === DEPLOYED_API) throw e;
+      window.PHD_API_BASE = DEPLOYED_API;
+      return fetchT(DEPLOYED_API + path, opts, ms);
+    }
+  }
+
+  // Which route the API is actually using — surfaced by diagnose().
+  const routeInUse = () => proxyMode === true ? "same-origin proxy"
+    : proxyMode === false ? "direct to " + base() : "not yet determined";
+
+  // Paste `await CoachAPI.diagnose()` in the console. "Can't reach the server"
+  // covers a wrong base URL, a blocked origin, an expired token and a real
+  // outage — this says which one, instead of leaving it to guesswork.
+  async function diagnose() {
+    const out = {
+      apiBase: base(),
+      origin: typeof location !== "undefined" ? location.origin : "(none)",
+      hasToken: !!token(),
+      tokenKind: token() === "demo-token" ? "demo (never syncs)" : token() ? "real" : "none",
+      route: routeInUse(),
+      build: "same-origin-proxy-20260728"
+    };
+    try {
+      const res = await apiFetch("/api/wellness/summary", { headers: authHeaders() }, 15000);
+      out.route = routeInUse();
+      out.reachable = true;
+      out.status = res.status;
+      out.verdict = res.status === 200 ? "OK — the API is reachable and the token works."
+        : res.status === 401 || res.status === 403 ? "Reached the API, but the token was rejected. Sign out and back in."
+        : `Reached the API; it answered ${res.status}.`;
+    } catch (e) {
+      out.reachable = false;
+      out.error = `${e.name}: ${e.message}`;
+      out.verdict = e.timeout
+        ? "The request timed out — the API is asleep or very slow."
+        : /localhost|127\.0\.0\.1/.test(base())
+          ? "Pointed at a local backend that isn't running. Start uvicorn, or set localStorage['phd-api-base'] to the deployed API."
+          : "The request never got a response: offline, DNS, a blocked origin (CORS), or a browser extension. Check the Network tab for the failed request.";
+    }
+    console.table ? console.table(out) : console.log(out);
+    return out;
+  }
+
   async function jsonOrThrow(res) {
     let data = null;
     try { data = await res.json(); } catch (e) {}
@@ -188,17 +294,17 @@
 
   // ---- Config -------------------------------------------------------------
   async function getConfig() {
-    const res = await fetch(`${base()}/api/config`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/config`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
 
   // ---- Chat sessions ------------------------------------------------------
   async function listSessions() {
-    const res = await fetch(`${base()}/api/chat-sessions`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/chat-sessions`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function createSession(title) {
-    const res = await fetch(`${base()}/api/chat-sessions`, {
+    const res = await apiFetch(`/api/chat-sessions`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ title: title || `Chat ${new Date().toLocaleDateString()}` })
     });
@@ -206,23 +312,23 @@
     return s && s.id;
   }
   async function getSession(id) {
-    const res = await fetch(`${base()}/api/chat-sessions/${id}`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/chat-sessions/${id}`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function renameSession(id, title) {
-    const res = await fetch(`${base()}/api/chat-sessions/${id}`, {
+    const res = await apiFetch(`/api/chat-sessions/${id}`, {
       method: "PUT", headers: authHeaders(), body: JSON.stringify({ title })
     });
     return jsonOrThrow(res);
   }
   async function deleteSession(id) {
-    const res = await fetch(`${base()}/api/chat-sessions/${id}`, { method: "DELETE", headers: authHeaders() });
+    const res = await apiFetch(`/api/chat-sessions/${id}`, { method: "DELETE", headers: authHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return true;
   }
   async function truncateMessages(sessionId, fromMessageId) {
     if (!sessionId || !fromMessageId) return null;
-    const res = await fetch(`${base()}/api/chat-sessions/${sessionId}/messages/truncate`, {
+    const res = await apiFetch(`/api/chat-sessions/${sessionId}/messages/truncate`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ from_message_id: fromMessageId })
     });
@@ -241,7 +347,7 @@
   async function saveMessage(sessionId, message) {
     if (!sessionId) return;
     try {
-      await fetch(`${base()}/api/chat-sessions/${sessionId}/messages`, {
+      await apiFetch(`/api/chat-sessions/${sessionId}/messages`, {
         method: "POST", headers: authHeaders(),
         body: JSON.stringify({ session_id: sessionId, message })
       });
@@ -312,7 +418,7 @@
   }
 
   async function defenseAnswerFeedback({ format, items, difficulty, areasOfFocus } = {}) {
-    const res = await fetch(`${base()}/api/workspace/defense/answer-feedback`, {
+    const res = await apiFetch(`/api/workspace/defense/answer-feedback`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         format: format || "defense",
@@ -324,7 +430,7 @@
     return jsonOrThrow(res);
   }
   async function resolveDefenseMemberProfile(member) {
-    const res = await fetch(`${base()}/api/defense/member-profile`, {
+    const res = await apiFetch(`/api/defense/member-profile`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ member })
     });
@@ -334,7 +440,7 @@
   async function parseDefenseMaterial(file) {
     const form = new FormData();
     form.append("file", file, file?.name || "defense-material");
-    const res = await fetch(`${base()}/api/defense/materials/parse`, {
+    const res = await apiFetch(`/api/defense/materials/parse`, {
       method: "POST", headers: authHeaders(false), body: form
     });
     return jsonOrThrow(res);
@@ -344,7 +450,7 @@
     const form = new FormData();
     form.append("file", file, file?.name || "defense-deck.pptx");
     form.append("render_slides", renderSlides ? "true" : "false");
-    const res = await fetch(`${base()}/api/defense/deck`, {
+    const res = await apiFetch(`/api/defense/deck`, {
       method: "POST", headers: authHeaders(false), body: form
     });
     return jsonOrThrow(res);
@@ -363,7 +469,7 @@
     form.append("target_presentation_minutes", String(targetPresentationMinutes || 20));
     form.append("audience_levels_json", JSON.stringify(audienceLevels || []));
     form.append("audience_interests_json", JSON.stringify(audienceInterests || []));
-    const res = await fetch(`${base()}/api/defense/presentation/analyze`, {
+    const res = await apiFetch(`/api/defense/presentation/analyze`, {
       method: "POST", headers: authHeaders(false), body: form
     });
     return jsonOrThrow(res);
@@ -374,7 +480,7 @@
     difficulty, targetPresentationMinutes, areasOfFocus, audienceLevels, audienceInterests,
     defensePriorities
   }) {
-    const res = await fetch(`${base()}/api/defense/questions`, {
+    const res = await apiFetch(`/api/defense/questions`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         format: format || "defense",
@@ -398,17 +504,17 @@
   // Per-user, backend-persisted state for the home tools. Callers should treat
   // these as best-effort: localStorage stays the offline source of truth.
   async function getWorkspaceState() {
-    const res = await fetch(`${base()}/api/workspace/state`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/workspace/state`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function putWorkspaceSection(section, items) {
-    const res = await fetch(`${base()}/api/workspace/state/${encodeURIComponent(section)}`, {
+    const res = await apiFetch(`/api/workspace/state/${encodeURIComponent(section)}`, {
       method: "PUT", headers: authHeaders(), body: JSON.stringify({ items })
     });
     return jsonOrThrow(res);
   }
   async function suggestReading({ topic, program, milestone, alreadyHave, count } = {}) {
-    const res = await fetch(`${base()}/api/workspace/reading/suggest`, {
+    const res = await apiFetch(`/api/workspace/reading/suggest`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         topic: topic || "", program: program || "", milestone: milestone || "",
@@ -419,11 +525,11 @@
   }
   // ---- Plan builder (template-grounded generation + assistant retrofit) ----
   async function planBaseTemplate() {
-    const res = await fetch(`${base()}/api/plan/base-template`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/plan/base-template`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function planGenerate({ handbookText, program, institution, profile } = {}) {
-    const res = await fetch(`${base()}/api/plan/generate`, {
+    const res = await apiFetch(`/api/plan/generate`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         handbook_text: handbookText || "", program: program || "", institution: institution || "",
@@ -433,14 +539,14 @@
     return jsonOrThrow(res);
   }
   async function planImport({ csvText, profile } = {}) {
-    const res = await fetch(`${base()}/api/plan/import`, {
+    const res = await apiFetch(`/api/plan/import`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ csv_text: csvText || "", profile: profile || {} })
     });
     return jsonOrThrow(res);
   }
   async function planWalkthrough({ title, section, objective, notes, days, program, field } = {}) {
-    const res = await fetch(`${base()}/api/plan/walkthrough`, {
+    const res = await apiFetch(`/api/plan/walkthrough`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         title: title || "", section: section || "", objective: objective || "",
@@ -450,7 +556,7 @@
     return jsonOrThrow(res);
   }
   async function planRetrofit({ plan, change, profile } = {}) {
-    const res = await fetch(`${base()}/api/plan/retrofit`, {
+    const res = await apiFetch(`/api/plan/retrofit`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ plan: plan || {}, change: change || "", profile: profile || {} })
     });
@@ -458,7 +564,7 @@
   }
 
   async function suggestMeetingAgenda({ withName, withRole, program, milestone, milestoneTasks, priorNotes, focus } = {}) {
-    const res = await fetch(`${base()}/api/workspace/meeting/suggest`, {
+    const res = await apiFetch(`/api/workspace/meeting/suggest`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         with_name: withName || "", with_role: withRole || "", program: program || "",
@@ -474,26 +580,26 @@
     form.append("agenda_json", JSON.stringify(agenda || []));
     form.append("with_name", withName || "");
     form.append("title", title || "");
-    const res = await fetch(`${base()}/api/workspace/meeting/analyze-recording`, {
+    const res = await apiFetch(`/api/workspace/meeting/analyze-recording`, {
       method: "POST", headers: authHeaders(false), body: form
     });
     return jsonOrThrow(res);
   }
   async function extractMeetingActions({ notes, agenda } = {}) {
-    const res = await fetch(`${base()}/api/workspace/meeting/actions`, {
+    const res = await apiFetch(`/api/workspace/meeting/actions`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({ notes: notes || "", agenda: agenda || [] })
     });
     return jsonOrThrow(res);
   }
   async function citeUrl(url) {
-    const res = await fetch(`${base()}/api/workspace/citation/url`, {
+    const res = await apiFetch(`/api/workspace/citation/url`, {
       method: "POST", headers: authHeaders(), body: JSON.stringify({ url })
     });
     return jsonOrThrow(res);
   }
   async function suggestFunding({ program, institution, topic, stage, count } = {}) {
-    const res = await fetch(`${base()}/api/workspace/funding/suggest`, {
+    const res = await apiFetch(`/api/workspace/funding/suggest`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         program: program || "", institution: institution || "",
@@ -505,11 +611,11 @@
 
   // ---- Document library (server-persisted Documents page) ------------------
   async function listLibraryDocs() {
-    const res = await fetch(`${base()}/api/library/documents`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/library/documents`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function getLibraryDoc(id) {
-    const res = await fetch(`${base()}/api/library/documents/${id}`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/library/documents/${id}`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function uploadLibraryDoc({ file, source }) {
@@ -517,43 +623,43 @@
     const form = new FormData();
     form.append("file", file, file.name || "document.txt");
     form.append("source", source || "documents");
-    const res = await fetch(`${base()}/api/library/documents`, {
+    const res = await apiFetch(`/api/library/documents`, {
       method: "POST", headers: authHeaders(false), body: form
     });
     return jsonOrThrow(res);
   }
   async function saveLibraryDoc(id, { name, content, reanalyze } = {}) {
-    const res = await fetch(`${base()}/api/library/documents/${id}`, {
+    const res = await apiFetch(`/api/library/documents/${id}`, {
       method: "PUT", headers: authHeaders(),
       body: JSON.stringify({ name, content, reanalyze: !!reanalyze })
     });
     return jsonOrThrow(res);
   }
   async function deleteLibraryDoc(id) {
-    const res = await fetch(`${base()}/api/library/documents/${id}`, {
+    const res = await apiFetch(`/api/library/documents/${id}`, {
       method: "DELETE", headers: authHeaders()
     });
     return jsonOrThrow(res);
   }
   async function analyzeLibraryDoc(id) {
-    const res = await fetch(`${base()}/api/library/documents/${id}/analyze`, {
+    const res = await apiFetch(`/api/library/documents/${id}/analyze`, {
       method: "POST", headers: authHeaders()
     });
     return jsonOrThrow(res);
   }
   async function compareLibraryDoc(id, againstId) {
-    const res = await fetch(`${base()}/api/library/documents/${id}/compare`, {
+    const res = await apiFetch(`/api/library/documents/${id}/compare`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify(againstId ? { against_id: againstId } : {})
     });
     return jsonOrThrow(res);
   }
   async function getKnowledge() {
-    const res = await fetch(`${base()}/api/library/knowledge`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/library/knowledge`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function saveKnowledge(markdown) {
-    const res = await fetch(`${base()}/api/library/knowledge`, {
+    const res = await apiFetch(`/api/library/knowledge`, {
       method: "PUT", headers: authHeaders(), body: JSON.stringify({ markdown })
     });
     return jsonOrThrow(res);
@@ -571,7 +677,7 @@
     return jsonOrThrow(res);
   }
   async function wellnessHistory(days = 30) {
-    const res = await fetch(`${base()}/api/wellness/checkins?days=${days}`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/wellness/checkins?days=${days}`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function insightsBrain(context = {}, force = false) {
@@ -581,7 +687,7 @@
     return jsonOrThrow(res);
   }
   async function wellnessInsight(context = {}, force = false) {
-    const res = await fetch(`${base()}/api/wellness/insight`, {
+    const res = await apiFetch(`/api/wellness/insight`, {
       method: "POST", headers: authHeaders(), body: JSON.stringify({ context, force })
     });
     return jsonOrThrow(res);
@@ -589,29 +695,29 @@
 
   // ---- Calendar & mail integrations (Google / Outlook) ---------------------
   async function integrationsStatus() {
-    const res = await fetch(`${base()}/api/integrations/status`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/integrations/status`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function integrationConnect(provider) {
-    const res = await fetch(`${base()}/api/integrations/${provider}/connect`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/integrations/${provider}/connect`, { headers: authHeaders() });
     return jsonOrThrow(res); // { auth_url } — open in a popup
   }
   async function integrationDisconnect(provider) {
-    const res = await fetch(`${base()}/api/integrations/${provider}/disconnect`, {
+    const res = await apiFetch(`/api/integrations/${provider}/disconnect`, {
       method: "POST", headers: authHeaders()
     });
     return jsonOrThrow(res);
   }
   async function calendarNext(days = 14) {
-    const res = await fetch(`${base()}/api/integrations/calendar/next?days=${days}`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/integrations/calendar/next?days=${days}`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function calendarBrief() {
-    const res = await fetch(`${base()}/api/integrations/calendar/brief`, { headers: authHeaders() });
+    const res = await apiFetch(`/api/integrations/calendar/brief`, { headers: authHeaders() });
     return jsonOrThrow(res);
   }
   async function calendarPush({ title, date, time, durationMinutes, notes, provider } = {}) {
-    const res = await fetch(`${base()}/api/integrations/calendar/push`, {
+    const res = await apiFetch(`/api/integrations/calendar/push`, {
       method: "POST", headers: authHeaders(),
       body: JSON.stringify({
         title: title || "Untitled", date: date || "", time: time || "",
@@ -621,13 +727,13 @@
     return jsonOrThrow(res);
   }
   async function driveCreateDoc({ name, html } = {}) {
-    const res = await fetch(`${base()}/api/integrations/google/drive/doc`, {
+    const res = await apiFetch(`/api/integrations/google/drive/doc`, {
       method: "POST", headers: authHeaders(), body: JSON.stringify({ name: name || "Document", html: html || "" })
     });
     return jsonOrThrow(res); // { id, url }
   }
   async function mailScanReadings(days = 14) {
-    const res = await fetch(`${base()}/api/integrations/mail/scan-readings`, {
+    const res = await apiFetch(`/api/integrations/mail/scan-readings`, {
       method: "POST", headers: authHeaders(), body: JSON.stringify({ days })
     });
     return jsonOrThrow(res);

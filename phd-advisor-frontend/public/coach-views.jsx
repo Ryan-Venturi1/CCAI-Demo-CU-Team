@@ -571,113 +571,189 @@ const bMd = (s) => (s || "").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     "Keeping the ones that matter this week…"
   ];
 
+  // ===========================================================================
+  // WARM CACHE
+  //
+  // Composing is not cheap — four API reads plus a model pass. Doing it when you
+  // open the tab means staring at a progress list; the work has nothing to do
+  // with the moment you arrived. So it runs in the background instead: the app
+  // kicks it off shortly after boot, the result is cached (and persisted, so a
+  // reload is instant too), and opening Insights just renders what's already
+  // there.
+  //
+  // Stale-while-revalidate: a cached page shows immediately and silently
+  // refreshes behind it when the system has learned something since. The
+  // progress list survives for exactly one case — a genuinely cold first visit
+  // that arrives before the warm finishes.
+  // ===========================================================================
+  const WARM_KEY = "phd-insights-warm-v1";
+  const WARM_TTL = 20 * 3600 * 1000;      // matches the server-side cache window
+
+  const warm = { data: null, inflight: null, step: 0, subs: new Set() };
+  const emit = () => warm.subs.forEach(fn => { try { fn(); } catch (e) {} });
+
+  try {
+    const raw = localStorage.getItem(WARM_KEY);
+    const saved = raw ? JSON.parse(raw) : null;
+    // Only trust a snapshot from this account, and only while it's plausibly current.
+    if (saved && saved.at && Date.now() - saved.at < WARM_TTL) warm.data = saved;
+  } catch (e) {}
+
+  const store = (d) => { try { localStorage.setItem(WARM_KEY, JSON.stringify(d)); } catch (e) {} };
+
+  // The context the composer reasons over, built from the plan + local tools.
+  function planLocals(roadmap, doneTasks) {
+    const steps = (roadmap && roadmap.steps) || [];
+    const byPhase = {};
+    steps.forEach(s => {
+      const p = s.phase || "Plan";
+      byPhase[p] = byPhase[p] || { phase: p, done: 0, total: 0, tasksDone: 0, tasksTotal: 0 };
+      byPhase[p].total++;
+      if (s.status === "done") byPhase[p].done++;
+      const subs = s.subtasks || [];
+      byPhase[p].tasksTotal += subs.length;
+      byPhase[p].tasksDone += subs.filter(t => doneTasks && doneTasks.has(`${s.id}::${t}`)).length;
+    });
+    const phases = Object.values(byPhase);
+    const cur = steps.find(s => s.status === "current" || s.status === "redo");
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = (iso) => Math.round((new Date(iso).setHours(0, 0, 0, 0) - today) / 86400000);
+    const deadlines = loadLocal("phd-coach-deadlines-v1")
+      .filter(d => d && d.date && (d.label || d.title) && !d.done)
+      .map(d => ({ label: String(d.label || d.title), date: d.date, days: days(d.date) }))
+      .sort((a, b) => a.days - b.days);
+    const meetings = loadLocal("phd-coach-meetings-v1")
+      .filter(m => m && m.date)
+      .map(m => ({ title: m.title || m.with || "Meeting", date: m.date, with: m.with || "" }));
+    return {
+      phases, steps: steps.length, stepsDone: steps.filter(s => s.status === "done").length,
+      current: cur ? cur.title : "", program: (roadmap && roadmap.program && roadmap.program.name) || "",
+      tasksDone: phases.reduce((a, p) => a + p.tasksDone, 0),
+      tasksTotal: phases.reduce((a, p) => a + p.tasksTotal, 0),
+      deadlines, meetings,
+      planSteps: steps.slice(0, 10).map(s => ({ title: s.title, phase: s.phase, status: s.status }))
+    };
+  }
+
+  const contextFrom = (local) => ({
+    plan: {
+      program: local.program, total_steps: local.steps, done_steps: local.stepsDone,
+      current: local.current, phases: local.phases, steps: local.planSteps
+    },
+    deadlines: local.deadlines.map(d => ({ label: d.label, date: d.date })),
+    meetings: local.meetings
+  });
+
+  // isAuthed() only means a token exists, and the demo token is a token — a demo
+  // session would fire four requests and collect four 401s every warm. It falls
+  // through to metrics computed in the browser from the plan and local tools,
+  // which is the honest thing to show; it just shouldn't ask the server first.
+  const canCompose = () => {
+    const api = window.CoachAPI;
+    return !!(api && api.isAuthed && api.isAuthed() && (!api.token || api.token() !== "demo-token"));
+  };
+
+  async function compose(local, force) {
+    const api = window.CoachAPI;
+    if (!canCompose()) return null;
+    if (warm.inflight && !force) return warm.inflight;
+
+    warm.step = 1; emit();
+    warm.inflight = (async () => {
+      const [w, d, k, sess] = await Promise.all([
+        api.wellnessSummary().catch(() => null),
+        api.listLibraryDocs().catch(() => null),
+        api.getKnowledge().catch(() => null),
+        api.listSessions().catch(() => null)
+      ]);
+      warm.step = 2; emit();
+
+      let brain = null;
+      try { brain = await api.insightsBrain(contextFrom(local), !!force); }
+      catch (e) { if (e && e.status === 404) brain = { unavailable: true }; }
+      warm.step = 3; emit();
+
+      // The page is alive: if anything was learned after this layout was composed,
+      // compose again now rather than serving a stale read.
+      try {
+        const learned = k && k.updated_at ? Date.parse(k.updated_at) : 0;
+        const made = brain && brain.created_at ? Date.parse(brain.created_at) : 0;
+        if (!force && brain && brain.cached && learned && made && learned > made) {
+          const fresh = await api.insightsBrain(contextFrom(local), true);
+          if (fresh) brain = fresh;
+        }
+      } catch (e) {}
+
+      warm.step = 4;
+      warm.data = {
+        brain,
+        wellness: w || null,
+        docs: (d && d.documents) || [],
+        chats: Array.isArray(sess) ? sess.length : 0,
+        composedAt: brain && brain.created_at ? Date.parse(brain.created_at) : Date.now(),
+        at: Date.now()
+      };
+      store(warm.data);
+      emit();
+      return warm.data;
+    })().catch(() => null).then(v => { warm.inflight = null; emit(); return v; });
+
+    return warm.inflight;
+  }
+
+  // Called by the shell once the app is up, and again whenever something that
+  // feeds Insights changes. Fire-and-forget by design — nothing awaits it.
+  window.warmInsights = (roadmap, doneTasks, force) => compose(planLocals(roadmap, doneTasks), force);
+  window.insightsAreWarm = () => !!(warm.data && warm.data.brain);
+  window.clearInsightsWarm = () => {
+    warm.data = null;
+    try { localStorage.removeItem(WARM_KEY); } catch (e) {}
+    emit();
+  };
+
   function CoachInsights({ onNav, roadmap, doneTasks }) {
     const authed = !!(window.CoachAPI && window.CoachAPI.isAuthed && window.CoachAPI.isAuthed());
-    const [phase, setPhase] = useS("gen");      // gen | ready | empty | offline
-    const [step, setStep] = useS(0);
-    const [brain, setBrain] = useS(null);
-    const [wellness, setWellness] = useS(null);
-    const [docs, setDocs] = useS([]);
-    const [chats, setChats] = useS(0);
-    const [panel, setPanel] = useS(null);        // {kind:"kpi"|"block"|"md", id}
+    // Start from whatever the background warm already produced. In the normal
+    // case that's a finished composition and this page never shows a spinner.
+    const [, bump] = useS(0);
+    const [panel, setPanel] = useS(null);        // {kind:"kpi"|"block", id}
     const [banned, setBanned] = useS({});
     const [done, setDone] = useS({});
-    const [ago, setAgo] = useS(0);
-    const composedAt = useR(null);
 
-    // ---- plan + local tool state ------------------------------------------
-    const local = useM(() => {
-      const steps = (roadmap && roadmap.steps) || [];
-      const byPhase = {};
-      steps.forEach(s => {
-        const p = s.phase || "Plan";
-        byPhase[p] = byPhase[p] || { phase: p, done: 0, total: 0, tasksDone: 0, tasksTotal: 0 };
-        byPhase[p].total++;
-        if (s.status === "done") byPhase[p].done++;
-        const subs = s.subtasks || [];
-        byPhase[p].tasksTotal += subs.length;
-        byPhase[p].tasksDone += subs.filter(t => doneTasks && doneTasks.has(`${s.id}::${t}`)).length;
-      });
-      const phases = Object.values(byPhase);
-      const cur = steps.find(s => s.status === "current" || s.status === "redo");
-      const today = new Date(); today.setHours(0, 0, 0, 0);
-      const days = (iso) => Math.round((new Date(iso).setHours(0, 0, 0, 0) - today) / 86400000);
-      const deadlines = loadLocal("phd-coach-deadlines-v1")
-        .filter(d => d && d.date && (d.label || d.title) && !d.done)
-        .map(d => ({ label: String(d.label || d.title), date: d.date, days: days(d.date) }))
-        .sort((a, b) => a.days - b.days);
-      const meetings = loadLocal("phd-coach-meetings-v1")
-        .filter(m => m && m.date)
-        .map(m => ({ title: m.title || m.with || "Meeting", date: m.date, with: m.with || "" }));
-      return {
-        phases, steps: steps.length, stepsDone: steps.filter(s => s.status === "done").length,
-        current: cur ? cur.title : "", program: (roadmap && roadmap.program && roadmap.program.name) || "",
-        tasksDone: phases.reduce((a, p) => a + p.tasksDone, 0),
-        tasksTotal: phases.reduce((a, p) => a + p.tasksTotal, 0),
-        deadlines, meetings,
-        planSteps: steps.slice(0, 10).map(s => ({ title: s.title, phase: s.phase, status: s.status }))
-      };
-    }, [roadmap, doneTasks]);
+    const local = useM(() => planLocals(roadmap, doneTasks), [roadmap, doneTasks]);
 
-    const context = () => ({
-      plan: {
-        program: local.program, total_steps: local.steps, done_steps: local.stepsDone,
-        current: local.current, phases: local.phases, steps: local.planSteps
-      },
-      deadlines: local.deadlines.map(d => ({ label: d.label, date: d.date })),
-      meetings: local.meetings
-    });
-
-    // ---- compose -----------------------------------------------------------
+    // Re-render whenever the warm cache changes underneath us — that's how a
+    // background refresh swaps itself in without a loading state.
     useE(() => {
-      let alive = true;
-      if (!authed) { setPhase("offline"); return; }
-      setPhase("gen"); setStep(1);
-      (async () => {
-        const api = window.CoachAPI;
-        const [w, d, k, s] = await Promise.all([
-          api.wellnessSummary().catch(() => null),
-          api.listLibraryDocs().catch(() => null),
-          api.getKnowledge().catch(() => null),
-          api.listSessions().catch(() => null)
-        ]);
-        if (!alive) return;
-        if (w) setWellness(w);
-        if (d) setDocs(d.documents || []);
-        if (Array.isArray(s)) setChats(s.length);
-        setStep(2);
+      const fn = () => bump(n => n + 1);
+      warm.subs.add(fn);
+      return () => { warm.subs.delete(fn); };
+    }, []);
 
-        let b = null;
-        try { b = await api.insightsBrain(context(), false); }
-        catch (e) { if (e && e.status === 404) b = { unavailable: true }; }
-        if (!alive) return;
-        setStep(3);
-
-        // Living page: if the system has learned something since this layout was
-        // composed, recompose now. This is what the refresh button used to be.
-        try {
-          const learned = k && k.updated_at ? Date.parse(k.updated_at) : 0;
-          const made = b && b.created_at ? Date.parse(b.created_at) : 0;
-          if (b && b.cached && learned && made && learned > made) {
-            const fresh = await window.CoachAPI.insightsBrain(context(), true);
-            if (fresh) b = fresh;
-          }
-        } catch (e) {}
-        if (!alive) return;
-        setStep(4);
-        setBrain(b);
-        composedAt.current = b && b.created_at ? Date.parse(b.created_at) : Date.now();
-        setAgo(Math.max(0, Math.round((Date.now() - composedAt.current) / 1000)));
-        setTimeout(() => { if (alive) setPhase("ready"); }, 420);
-      })();
-      return () => { alive = false; };
+    // If nothing has warmed this session, start now. This is the only path that
+    // ever shows the progress list.
+    useE(() => {
+      if (authed && !warm.data && !warm.inflight) compose(local, false);
     }, [authed]);
 
+    const cached = warm.data || null;
+    const brain = cached && cached.brain;
+    const wellness = (cached && cached.wellness) || null;
+    const docs = (cached && cached.docs) || [];
+    const chats = (cached && cached.chats) || 0;
+    const composedAt = (cached && cached.composedAt) || null;
+    const phase = !authed ? "offline" : cached ? "ready" : "gen";
+    const step = warm.step;
+
+    // Derived at render, not stored: the composition may be minutes old by the
+    // time you open the tab, and starting a counter at zero would claim it was
+    // built just now. The interval only exists to re-render the label.
+    const ago = composedAt ? Math.max(0, Math.round((Date.now() - composedAt) / 1000)) : 0;
     useE(() => {
-      if (phase !== "ready" || !composedAt.current) return;
-      const t = setInterval(() => setAgo(Math.round((Date.now() - composedAt.current) / 1000)), 15000);
+      if (!composedAt) return;
+      const t = setInterval(() => bump(n => n + 1), 15000);
       return () => clearInterval(t);
-    }, [phase]);
+    }, [composedAt]);
 
     // ---- resolve the page --------------------------------------------------
     const chartBlocks = useM(() => localChartBlocks(wellness, local.phases, docs), [wellness, local.phases, docs]);
@@ -807,7 +883,7 @@ const bMd = (s) => (s || "").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
         {header}
 
         {brain && brain.unavailable && (
-          <div className="ix-note warn">
+          <div className="ix-note warn" data-page-error>
             <Ico name="AlertTriangle" size={16} />
             <div>
               <b>The deployed backend is older than this app.</b>
@@ -1712,7 +1788,7 @@ function CoachDocuments({ roadmap }) {
       </div>
 
       {busy && <div className="search-state" style={{ marginBottom: 14 }}><IcoV name="Loader" size={16} className="spin" /> Reading &amp; converting <strong>&nbsp;{busy}&nbsp;</strong>…</div>}
-      {uploadErr && <div className="doc-upload-err"><IcoV name="AlertTriangle" size={15} /> {uploadErr}</div>}
+      {uploadErr && <div className="doc-upload-err" data-page-error><IcoV name="AlertTriangle" size={15} /> {uploadErr}</div>}
 
       {cards.length === 0 && (
         <button className="doc-dropzone" onClick={openUploader}>

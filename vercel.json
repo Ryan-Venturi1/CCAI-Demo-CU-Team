@@ -5,6 +5,13 @@
   "buildCommand": "echo 'no build — app self-boots via CDN React + Babel'",
   "outputDirectory": "phd-advisor-frontend/public",
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://phd-navigator-api.onrender.com/api/$1" },
+    { "source": "/auth/(.*)", "destination": "https://phd-navigator-api.onrender.com/auth/$1" },
+    { "source": "/chat-stream", "destination": "https://phd-navigator-api.onrender.com/chat-stream" },
+    { "source": "/new-chat", "destination": "https://phd-navigator-api.onrender.com/new-chat" },
+    { "source": "/switch-chat", "destination": "https://phd-navigator-api.onrender.com/switch-chat" },
+    { "source": "/reply-to-advisor", "destination": "https://phd-navigator-api.onrender.com/reply-to-advisor" },
+    { "source": "/upload-document", "destination": "https://phd-navigator-api.onrender.com/upload-document" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

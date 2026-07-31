@@ -164,6 +164,44 @@
     );
   }
 
+
+  // ---------------------------------------------------------------------------
+  // SupportRow — the "need more than a nudge?" strip.
+  //
+  // Deliberately two links, not eight. A wall of resources is something you
+  // scroll past; the point is that the one route out is unmissable when it
+  // matters. Campus counseling first (free, confidential, and used to exactly
+  // this), then 988 for a crisis.
+  //
+  // Shared because it belongs on Home too — the page people actually open —
+  // not only on the page you visit when you already know you're struggling.
+  // ---------------------------------------------------------------------------
+  const CRISIS_LINKS = [
+    { name: "988 (call or text)", url: "https://988lifeline.org/", icon: "Phone" }
+  ];
+
+  function SupportRow({ urgent, innerRef, className }) {
+    const inst = (window.CoachAPI && window.CoachAPI.getUser && window.CoachAPI.getUser().institution) || "";
+    const campusUrl = `https://www.google.com/search?q=${encodeURIComponent((inst || "my university") + " counseling center appointment")}`;
+    return (
+      <div ref={innerRef} className={`well-support ${urgent ? "urgent" : ""} ${className || ""}`}>
+        <span className="well-support-l"><Icon name="LifeBuoy" size={13} /> Need more than a nudge?</span>
+        <a className="well-support-a" href={campusUrl} target="_blank" rel="noreferrer"
+           title="Usually free, confidential, and used to PhD problems">
+          <Icon name="Building2" size={12} /> {inst ? `${inst} counseling` : "Campus counseling"}
+        </a>
+        {CRISIS_LINKS.map((l) => (
+          <a key={l.url} className="well-support-a" href={l.url} target="_blank" rel="noreferrer">
+            <Icon name={l.icon} size={12} /> {l.name}
+          </a>
+        ))}
+      </div>
+    );
+  }
+
+  window.SupportRow = SupportRow;
+  window.CRISIS_LINKS = CRISIS_LINKS;
+
   window.Icon = Icon;
   window.AcademicCombo = AcademicCombo;
 })();

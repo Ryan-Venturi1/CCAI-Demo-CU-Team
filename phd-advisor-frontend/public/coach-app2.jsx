@@ -149,7 +149,7 @@ function PlanHowTo({ roadmap, step, sub, code, onAsk }) {
   return (
     <div className="howto">
       {busy && !wt && <div className="howto-load"><Ico name="Loader" size={13} className="spin" /> Writing the how-to for {code}…</div>}
-      {err && <div className="howto-err"><Ico name="AlertTriangle" size={12} /> {err} {authed && <button className="btn sm" onClick={gen}>Retry</button>}</div>}
+      {err && <div className="howto-err" data-page-error><Ico name="AlertTriangle" size={12} /> {err} {authed && <button className="btn sm" onClick={gen}>Retry</button>}</div>}
       {!busy && !wt && !err && (
         <button className="btn sm primary" onClick={gen}><Ico name="Sparkles" size={13} color="#fff" /> Show me how to do this</button>
       )}
@@ -369,7 +369,7 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
           )}
           <div className="sub">{doneCount} of {roadmap.steps.length} milestones complete · {pct}%</div>
         </div>
-        <div className="plan-toolbar">
+        <div className="plan-toolbar" data-ptour="plan-edit">
           <input ref={csvRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={importCsv} />
           <button className="btn sm" onClick={() => csvRef.current && csvRef.current.click()} title="Replace your plan from a CSV file"><Ico name="Upload" size={13} /> Import CSV</button>
           <button className="btn sm" onClick={exportCsv} title="Download your plan as a CSV to edit in a spreadsheet"><Ico name="Download" size={13} /> Export CSV</button>
@@ -392,7 +392,7 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
           </div>
           <span className="grad-end finish" title="Graduation"><Ico name="GraduationCap" size={15} /></span>
         </div>
-        <div className="plan-glance-meta">
+        <div className="plan-glance-meta" data-ptour="plan-glance">
           <span className="pg-chip strong"><Ico name="GraduationCap" size={12} /> {pct}% · {doneCount}/{roadmap.steps.length} milestones</span>
           {isCurrent && !editPlan && <span className="pg-chip"><Ico name="MapPin" size={12} /> Now: <strong>{step.title}</strong></span>}
           {nextGate && <span className="pg-chip"><Ico name="Flag" size={12} /> Next gate: <strong>{nextGate.title}</strong></span>}
@@ -402,7 +402,7 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
 
       <div className="step-wrap">
         {/* Spine */}
-        <div className="spine">
+        <div className="spine" data-ptour="plan-spine">
           {editPlan && <button className="btn sm spine-add" style={{ marginBottom: 8 }} onClick={() => addMilestoneAt(0)}><Ico name="Plus" size={14} /> Add section at top</button>}
           {roadmap.steps.map((s, i) => {
             const showPhase = s.phase !== lastPhase; lastPhase = s.phase;
@@ -881,7 +881,8 @@ function ChatView({ roadmap, onNav }) {
 // ============================================================================
 // Mini help center — static content for anyone who gets lost.
 const HELP_GLOSSARY = [
-  ["Milestone / step", "One stage of the PhD journey — each has its own objective, tools, and checklist."],
+  ["Milestone", "A numbered stage of the PhD — 1, 2, 3 — often months of work, with its own objective and tools."],
+  ["Sub-task", "The lettered pieces inside a milestone (1a, 1b, 1c) — smaller and more concrete, but still real work. Clearing them all closes the milestone."],
   ["Gate", "A major checkpoint (prelim, proposal defense, candidacy). Clearing one unlocks the next phase."],
   ["Perspective", "An optional analytical emphasis for a PhD Navigator answer, such as methods, theory, critique, or stakeholders."],
   ["Action", "A visible task that creates something useful in your Workspace or Documents."],
@@ -1457,12 +1458,8 @@ function CraftToolModal({ stepTitle, onClose, onCreated }) {
 // UNLOCK POPUP — one reusable modal for each engagement milestone.
 // ============================================================================
 const UNLOCK_CONTENT = {
-  multiple: { icon: "Users", title: "Want more than one perspective?", to: "chat", cta: "Try Multiple mode",
-    body: "You can now switch Chat to Multiple mode and hear up to three advisor lenses on the same question — or keep it to one. Your call." },
   skills: { icon: "Sparkles", title: "Actions are unlocked", to: "skills", cta: "Explore Actions",
-    body: "Actions create useful outputs such as a literature-gap review, chapter outline, methods critique, or meeting-prep document." },
-  personas10: { icon: "Users", title: "All 10 advisors are available", to: "chat", cta: "Open Chat",
-    body: "Your full panel of advisor lenses is unlocked — methods, theory, writing, wellbeing, career, and more. Mix and match whoever fits the question." }
+    body: "Actions create useful outputs such as a literature-gap review, chapter outline, methods critique, or meeting-prep document." }
 };
 function UnlockPopup({ id, onDismiss, onAct, onKeepHidden }) {
   const c = UNLOCK_CONTENT[id]; if (!c) return null;
@@ -1542,15 +1539,12 @@ function CoachRoot() {
   const [seenUnlocks, setSeenUnlocks] = useS2(() => H.loadJSON(H.UNLOCKS_KEY, []));
   const [unlockPopup, setUnlockPopup] = useS2(null);
   const [rebuildProfile, setRebuildProfile] = useS2(null);
-  // A feature is "on" once its message threshold is reached (or reveal-all) AND
-  // the user hasn't chosen to keep it hidden.
-  const isHidden = (id) => (prefs.hidden || []).includes(id);
-  const reached = (thr) => prefs.revealAll || engagement.messages >= thr;
+  // Feature unlocks are retired — nothing is gated on message count. Chat no
+  // longer has multi-advisor or in-composer actions to reveal, so those flags
+  // are gone; `skills` stays because the Actions page is still hidden for beta.
   const unlocked = useM2(() => ({
-    multiple:   reached(1)  && !isHidden("multiple"),
-    skills:     false, // Skills page temporarily hidden for beta
-    personas10: reached(15) && !isHidden("personas10")
-  }), [prefs.revealAll, prefs.hidden, engagement.messages]);
+    skills: false   // Actions page temporarily hidden for beta
+  }), []);
   const focused = prefs.density === "focused";
   const bumpMessages = () => setEngagement(e => ({ ...e, messages: (e.messages || 0) + 1 }));
   const dismissUnlock = (id) => { setSeenUnlocks(s => s.includes(id) ? s : [...s, id]); setUnlockPopup(null); };
@@ -1821,7 +1815,16 @@ function CoachRoot() {
       </main>
 
       <Celebration data={celebrate} onClose={() => setCelebrate(null)} />
-      {showTour && <window.CoachTour onNav={setView} onClose={() => setShowTour(false)} skillsUnlocked={unlocked.skills} />}
+      {showTour && <window.CoachTour onNav={setView} skillsUnlocked={unlocked.skills}
+        onClose={() => {
+          setShowTour(false);
+          // The welcome tour ends on whichever page it visited last. Land back on
+          // Home — it's the page it just told you to start from — and don't then
+          // immediately run Home's own walkthrough, which would be the third
+          // thing in a row saying hello.
+          setView("home");
+          if (window.markPageTourSeen) window.markPageTourSeen("home");
+        }} />}
       {/* Per-page first-view walkthrough (Documents/Insights/Skills/Defense).
           Suppressed while the app-wide welcome tour is running so they don't stack. */}
       {!showTour && window.PageTour && <window.PageTour page={v} />}

@@ -10,7 +10,7 @@
      * The API is NOT on the same host as this static frontend, so it has to be
      * named explicitly — and it differs by environment:
      *
-     *   localhost / 127.0.0.1  -> "" so coach-api.js falls back to <host>:8000,
+     *   localhost / 127.0.0.1  -> "" so coach-api.js?v=merged-20260729 falls back to <host>:8000,
      *                             i.e. the backend you run locally (uvicorn).
      *   anywhere else (Vercel) -> the deployed Render API.
      *
@@ -38,7 +38,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <!-- IBM Plex Mono renders insights.md — the markdown the Insights page is composed from. -->
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="coach-styles.css?v=chat-export-20260728" />
+  <link rel="stylesheet" href="coach-styles.css?v=fab-helv-20260729" />
 </head>
 <body>
   <div id="root"></div>
@@ -99,29 +99,29 @@
   <script src="roadmap-engine.js?v=direct-handbook-network-20260713"></script>
 
   <!-- Real backend wiring (auth, streaming chat, sessions). Defines window.CoachAPI. -->
-  <script src="coach-api.js?v=practice-room-20260727"></script>
+  <script src="coach-api.js?v=merged-20260729"></script>
 
   <!-- Shared Icon helper (must run before the tools module) -->
-  <script type="text/babel" src="coach-shared.jsx?v=academic-combo-20260624" data-presets="react"></script>
+  <script type="text/babel" src="coach-shared.jsx?v=tours-20260729" data-presets="react"></script>
 
   <!-- Functional persistent tools (notes, tasks, reading, pomodoro, bib) -->
-  <script type="text/babel" src="canvas-tools.jsx?v=meet-calendar-20260728" data-presets="react"></script>
+  <script type="text/babel" src="canvas-tools.jsx?v=deeptours-20260729" data-presets="react"></script>
 
   <!-- Committee Builder (chair helper + match scoring) -->
   <script type="text/babel" src="coach-committee.jsx" data-presets="react"></script>
 
   <!-- App: onboarding + dashboard (defines window.coachHelpers) -->
-  <script type="text/babel" src="coach-app.jsx?v=meetfix-20260724" data-presets="react"></script>
+  <script type="text/babel" src="coach-app.jsx?v=tours-20260729" data-presets="react"></script>
 
   <!-- Marketing landing + login (website-style home) -->
   <script type="text/babel" src="coach-landing.jsx?v=lenses-20260728" data-presets="react"></script>
 
   <!-- Insights / Workspace / Documents. Insights composes itself from the
        backend's scored candidate library; insights.md is what it renders. -->
-  <script type="text/babel" src="coach-views.jsx?v=ix-strip-20260728b" data-presets="react"></script>
+  <script type="text/babel" src="coach-views.jsx?v=fab-20260729" data-presets="react"></script>
 
   <!-- Chat and shared site search -->
-  <script type="text/babel" src="coach-chat.jsx?v=chat-export-fix-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-chat.jsx?v=tours-20260729" data-presets="react"></script>
 
   <!-- Skills library (Chen's specialized-LLM skills) -->
   <script type="text/babel" src="coach-skills.jsx" data-presets="react"></script>
@@ -130,16 +130,16 @@
   <script type="text/babel" src="coach-defense.jsx?v=material-role-scope-20260727" data-presets="react"></script>
 
   <!-- Welcome tutorial — guided walkthrough -->
-  <script type="text/babel" src="coach-tour.jsx" data-presets="react"></script>
+  <script type="text/babel" src="coach-tour.jsx?v=tourfit-20260729" data-presets="react"></script>
 
   <!-- Per-page first-view walkthroughs (Documents / Insights / Skills / Defense) -->
-  <script type="text/babel" src="coach-page-tours.jsx?v=ins-tour-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-page-tours.jsx?v=fab-helv-20260729" data-presets="react"></script>
 
   <!-- Wellbeing page — daily check-ins, burnout signal, resources -->
-  <script type="text/babel" src="coach-wellness.jsx?v=quiet-checker-20260728" data-presets="react"></script>
-  <script type="text/babel" src="coach-meetings.jsx?v=cadence-card-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-wellness.jsx?v=fab-20260729" data-presets="react"></script>
+  <script type="text/babel" src="coach-meetings.jsx?v=tourfit-20260729" data-presets="react"></script>
 
   <!-- App: plan/step, recovery, chat, settings, router + mount -->
-  <script type="text/babel" src="coach-app2.jsx?v=chat-fullheight-20260728" data-presets="react"></script>
+  <script type="text/babel" src="coach-app2.jsx?v=fab-20260729" data-presets="react"></script>
 </body>
 </html>

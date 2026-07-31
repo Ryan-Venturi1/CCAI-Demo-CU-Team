@@ -1798,8 +1798,18 @@ button, input, textarea, select { font-family: inherit; }
 .def-hist-empty .btn { margin-top: 8px; }
 
 /* ── Per-page tutorial: replay pill ─────────────────────────────────────── */
-.ptour-replay { position: fixed; right: 20px; bottom: 20px; z-index: 120; display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--surface); color: var(--text-2); font-size: 12.5px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-lg); transition: color .15s ease, border-color .15s ease, transform .12s ease; }
-.ptour-replay:hover { color: var(--primary-deep); border-color: var(--primary); transform: translateY(-1px); }
+/* Page walkthrough trigger — one large question mark, no label. A circle this
+   size reads as "help" on sight and stops competing with page content the way a
+   worded pill did. 53px keeps it a comfortable tap target; the mark is set heavy
+   because a thin glyph inside a big circle looks like a mistake.
+
+   Helvetica Neue rather than the app's Fraunces: a grotesque question mark is a
+   plain, universally-read symbol, where the serif one reads as a typographic
+   flourish. It's a system font (no webfont to load) and degrades through
+   Helvetica to Arial off macOS. */
+.ptour-replay { position: fixed; right: 20px; bottom: 20px; z-index: 120; width: 53px; height: 53px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--border-2); background: var(--surface); color: var(--text-2); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 29px; font-weight: 700; line-height: 1; cursor: pointer; box-shadow: var(--shadow-lg); transition: color .15s ease, border-color .15s ease, background .15s ease, transform .12s ease; }
+.ptour-replay:hover { color: var(--primary-deep); border-color: var(--primary); background: var(--primary-soft); transform: translateY(-1px); }
+.ptour-replay:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 /* ── Home dashboard · design option 3a (decluttered) ────────────────────── */
 /* The home dashboard is mission-control: let it use the wide screen instead of
@@ -1811,9 +1821,14 @@ button, input, textarea, select { font-family: inherit; }
    revealed only once there's real width to spare (design 1a/2a tiles). */
 .dh-stats { display: none; }
 @media (min-width: 1500px) {
-  .dh-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+  /* Auto columns, not a fixed four. Tiles are conditional — the meeting tile
+     only appears once a calendar is connected — and `repeat(4, 1fr)` left a
+     dead column plus needlessly narrow tiles. This way however many tiles are
+     present divide the row between them, so two render twice as wide. */
+  .dh-stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 18px; }
 }
-.dh-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 15px; padding: 14px 16px; }
+.dh-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 15px; padding: 16px 20px; min-width: 0; }
+.dh-stat .dh-stat-nm, .dh-stat .dh-stat-s { overflow-wrap: anywhere; }
 .dh-stat-l { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); margin-bottom: 8px; }
 .dh-stat-l.accent { color: var(--primary-deep); }
 .dh-stat-l.amber { color: var(--amber); }
@@ -3237,3 +3252,8 @@ button, input, textarea, select { font-family: inherit; }
 .doc-card-n { overflow-wrap: anywhere; word-break: break-word; hyphens: auto; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
 .doc-card-meta { overflow-wrap: anywhere; word-break: break-word; }
 .doc-card-acts { flex-shrink: 0; }
+
+/* Support row as a Home footer — quieter than on the Wellbeing page (it is not
+   the reason you came here) but never hidden behind a scroll or a tab. */
+.dh-support-foot { margin: 22px 0 8px; background: transparent; border-style: dashed; }
+.dh-support-foot:hover { background: var(--surface); border-style: solid; }

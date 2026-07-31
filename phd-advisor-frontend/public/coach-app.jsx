@@ -1067,7 +1067,7 @@ function Dashboard({ roadmap, onNav, onOpenSos, doneTasks, setDoneTasks, activit
   // --- Section renderers (each Home block is a toggleable, orderable unit) ---
   const sections = {
     journey: () => (
-      <div className="dh-tl">
+      <div className="dh-tl" data-ptour="home-journey">
         <div className="dh-tl-head">
           <span className="dh-eyebrow">Your journey</span>
           <span className="dh-ws-sub">{doneCount} of {steps.length} milestones · {pct}%</span>
@@ -1103,31 +1103,32 @@ function Dashboard({ roadmap, onNav, onOpenSos, doneTasks, setDoneTasks, activit
             </>
           )}
         </div>
-        <div className="dh-stat">
-          <div className="dh-stat-l sage">Next meeting</div>
-          {nextMeeting ? (
-            <>
-              <div className="dh-stat-nm">{nextMeeting.title}</div>
-              <div className="dh-stat-s">{fmtMeetTime(nextMeeting.start) || "Soon"}{nextMeeting.with ? ` · ${nextMeeting.with}` : ""}</div>
-            </>
-          ) : calConnected ? (
-            <>
-              <div className="dh-stat-nm">Nothing scheduled</div>
-              <div className="dh-stat-s">Your calendar is clear</div>
-            </>
-          ) : (
-            <>
-              <div className="dh-stat-nm">No calendar linked</div>
-              <button className="linkish dh-stat-link" onClick={() => onNav("settings")}>Connect Google or Outlook →</button>
-            </>
-          )}
-        </div>
+        {/* Only earns a tile once it can say something true. With no calendar
+            connected it was a permanent ad for Settings sitting in the same row
+            as two real numbers — so it stays out until there's a calendar to
+            report on, and the remaining tiles divide the row between them. */}
+        {(nextMeeting || calConnected) && (
+          <div className="dh-stat">
+            <div className="dh-stat-l sage">Next meeting</div>
+            {nextMeeting ? (
+              <>
+                <div className="dh-stat-nm">{nextMeeting.title}</div>
+                <div className="dh-stat-s">{fmtMeetTime(nextMeeting.start) || "Soon"}{nextMeeting.with ? ` · ${nextMeeting.with}` : ""}</div>
+              </>
+            ) : (
+              <>
+                <div className="dh-stat-nm">Nothing scheduled</div>
+                <div className="dh-stat-s">Your calendar is clear</div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     ),
     week: () => (
       <>
       <div className="dh-half-row">
-      <div className="dh-card dh-today" style={{ marginBottom: 0, height: "100%" }}>
+      <div className="dh-card dh-today" data-ptour="home-week" style={{ marginBottom: 0, height: "100%" }}>
         <div className="dh-card-head">
           <span className="dh-eyebrow accent">This week</span>
           <span className="dh-count">{doneToday} of {todo.length} done</span>
@@ -1299,6 +1300,10 @@ function Dashboard({ roadmap, onNav, onOpenSos, doneTasks, setDoneTasks, activit
           onReset={() => setLayout(HOME_SECTIONS.map(s => ({ id: s.id, on: true })))}
           onClose={() => setCustomize(false)} />
       )}
+      {/* The support row lives on Home too, not just Wellbeing. Someone having a
+          bad week opens Home; asking them to navigate to the wellbeing page to
+          find a phone number is asking too much of that moment. */}
+      {window.SupportRow ? <window.SupportRow className="dh-support-foot" /> : null}
       <button className="sos" onClick={onOpenSos}><Icon name="LifeBuoy" size={15} /> Something came up?</button>
     </div>
   );
