@@ -819,6 +819,17 @@ const bMd = (s) => (s || "").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     });
 
     // ---- header ------------------------------------------------------------
+    // Recompose on demand. The page still rebuilds itself in the background when
+    // the system learns something — this is for the moment you've just changed
+    // something and want to see it reflected now rather than on the next visit.
+    const [refreshing, setRefreshing] = useS(false);
+    const refresh = async () => {
+      if (refreshing || !authed) return;
+      setRefreshing(true);
+      try { await compose(local, true); } catch (e) {}
+      setRefreshing(false);
+    };
+
     const header = (
       <div className="ix-top">
         <div className="ix-top-l">
@@ -827,6 +838,15 @@ const bMd = (s) => (s || "").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
             {local.current ? `Now: ${local.current}` : "Insights composes itself from everything the system knows."}
           </div>
         </div>
+        {authed && (
+          <div className="ix-top-r">
+            <button className="btn sm" onClick={refresh} disabled={refreshing}
+              title="Score everything again from your latest documents, meetings and check-ins">
+              <Ico name={refreshing ? "Loader" : "RefreshCw"} size={14} className={refreshing ? "spin" : ""} />
+              {refreshing ? "Recomposing…" : "Refresh insights"}
+            </button>
+          </div>
+        )}
       </div>
     );
 
@@ -1487,7 +1507,12 @@ function CoachDocuments({ roadmap }) {
     });
     uppy.on("file-added", (f) => {
       if (ingestRef.current && f && f.data) ingestRef.current([f.data]);
-      setTimeout(() => { try { uppy.removeFile(f.id); } catch (e) {} }, 800);
+      // The file is already ingested by this point, so the picker has done its
+      // job — leaving it open just hides the shelf the document landed on.
+      setTimeout(() => {
+        try { uppy.removeFile(f.id); } catch (e) {}
+        try { const d = uppy.getPlugin("Dashboard"); if (d && d.closeModal) d.closeModal(); } catch (e) {}
+      }, 450);
     });
     uppyRef.current = uppy;
     return () => { try { (uppy.destroy || uppy.close).call(uppy); } catch (e) {} uppyRef.current = null; };

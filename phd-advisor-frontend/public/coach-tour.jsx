@@ -88,8 +88,10 @@ function CoachTour({ onNav, onClose, skillsUnlocked = true }) {
   const [i, setI] = useST(0);
   const [rect, setRect] = useST(null);
   const cardRef = useRT(null);
-  // Drop the Skills step from the tour while Skills is still locked.
-  const steps = skillsUnlocked ? TOUR_STEPS : TOUR_STEPS.filter(s => s.view !== "skills");
+  // Drop steps for pages that are parked for beta — a tour that navigates to a
+  // page the rail doesn't offer strands you somewhere you can't get back to.
+  const HIDDEN = new Set(["wellness"].concat(skillsUnlocked ? [] : ["skills"]));
+  const steps = TOUR_STEPS.filter(s => !HIDDEN.has(s.view));
   const step = steps[i];
   const isFirst = i === 0;
   const isLast = i === steps.length - 1;

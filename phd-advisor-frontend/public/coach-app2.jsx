@@ -119,7 +119,7 @@ function csvToRoadmap(text, base, stamp) {
 // mini-steps you can check off (ported from the spreadsheet's row expansion),
 // cached per subtask in localStorage. Degrades to an "ask your advisors" link.
 const PLAN_WT_KEY = "phd-plan-walkthrough-v1";
-function PlanHowTo({ roadmap, step, sub, code, onAsk }) {
+function PlanHowTo({ roadmap, step, sub, code, onAsk, onAllDone, subDone }) {
   const wtId = `${step.id}::${sub}`;
   const readAll = () => { try { return JSON.parse(localStorage.getItem(PLAN_WT_KEY) || "{}"); } catch (e) { return {}; } };
   const [entry, setEntry] = useS2(() => readAll()[wtId] || null);
@@ -144,8 +144,77 @@ function PlanHowTo({ roadmap, step, sub, code, onAsk }) {
   const wt = entry && entry.wt;
   const checked = new Set((entry && entry.checked) || []);
   const toggle = (i) => { const n = new Set(checked); n.has(i) ? n.delete(i) : n.add(i); save({ ...entry, checked: [...n] }); };
+
+  // The AI's suggestions are a starting point, not gospel — it doesn't know your
+  // department. Every step can be reworded, removed, or added to, and the check
+  // marks follow the edit so ticking doesn't silently shift onto another step.
+  const [editing, setEditing] = useS2(-1);
+  const [draft, setDraft] = useS2("");
+  const writeSteps = (nextSteps, nextChecked) =>
+    save({ ...entry, wt: { ...wt, steps: nextSteps }, checked: [...(nextChecked || checked)] });
+
+  const editStep = (i, text) => {
+    const t = (text || "").trim();
+    setEditing(-1);
+    if (!t || !wt) return;
+    const next = wt.steps.slice();
+    next[i] = typeof next[i] === "object" ? { ...next[i], title: t } : t;
+    writeSteps(next);
+  };
+  const removeStep = (i) => {
+    if (!wt) return;
+    const next = wt.steps.filter((_, j) => j !== i);
+    // Indices shift when one goes: re-map the ticks so they stay on their step.
+    const moved = new Set();
+    checked.forEach(c => { if (c < i) moved.add(c); else if (c > i) moved.add(c - 1); });
+    writeSteps(next, moved);
+  };
+  const addStep = () => {
+    const t = (draft || "").trim();
+    if (!t || !wt) return;
+    writeSteps([...(wt.steps || []), t]);
+    setDraft("");
+  };
   const steps = (wt && wt.steps) || [];
   const doneN = steps.filter((_, i) => checked.has(i)).length;
+  const allDone = steps.length > 0 && doneN === steps.length;
+  // Finishing the how-to IS finishing the sub-task. Ticking 1a by hand
+  // afterwards is a second bit of bookkeeping for work you've already done.
+  //
+  // Fires on the RISING EDGE only. Reacting to "how-to complete AND sub-task not
+  // done" would re-tick 1a the instant you un-ticked it, making it impossible to
+  // undo; the latch resets when a how-to step is unchecked, which is the real
+  // signal that the sub-task is back in progress.
+  const autoTicked = useR2(false);
+  useE2(() => {
+    if (!allDone) { autoTicked.current = false; return; }
+    if (autoTicked.current) return;
+    autoTicked.current = true;
+    if (!subDone && onAllDone) onAllDone();
+  }, [allDone]);
+  // Once every step is ticked the walkthrough has done its job. Leaving five
+  // checked boxes and a Regenerate button on screen is just clutter sitting on
+  // top of the thing you came here for, so it folds to a single line — still
+  // reopenable, and clearable if you want the sub-task clean again.
+  const [reopened, setReopened] = useS2(false);
+  const clear = () => {
+    const m = readAll(); delete m[wtId];
+    try { localStorage.setItem(PLAN_WT_KEY, JSON.stringify(m)); } catch (e) {}
+    setEntry(null); setReopened(false);
+  };
+
+  if (wt && allDone && !reopened) {
+    return (
+      <div className="howto howto-done">
+        <span className="howto-done-t">
+          <Ico name="CheckCircle2" size={14} /> How to do {code} — all {steps.length} steps done
+        </span>
+        <button className="btn sm ghost" onClick={() => setReopened(true)}>Show steps</button>
+        <button className="btn sm ghost" onClick={clear} title="Remove this walkthrough">Clear</button>
+      </div>
+    );
+  }
+
   return (
     <div className="howto">
       {busy && !wt && <div className="howto-load"><Ico name="Loader" size={13} className="spin" /> Writing the how-to for {code}…</div>}
@@ -161,11 +230,34 @@ function PlanHowTo({ roadmap, step, sub, code, onAsk }) {
           </div>
           <div className="howto-steps">
             {steps.map((st, i) => (
-              <button key={i} className={`howto-step ${checked.has(i) ? "done" : ""}`} onClick={() => toggle(i)}>
-                <span className="howto-cb">{checked.has(i) && <Ico name="Check" size={11} color="#fff" />}</span>
-                <span className="howto-step-t">{st.title || st.text || st}{st.detail ? <span className="howto-step-d">{st.detail}</span> : null}</span>
-              </button>
+              editing === i ? (
+                <div key={i} className="howto-step editing">
+                  <span className="howto-cb" />
+                  <input className="howto-edit" autoFocus defaultValue={st.title || st.text || st}
+                    onBlur={e => editStep(i, e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") editStep(i, e.target.value); if (e.key === "Escape") setEditing(-1); }} />
+                </div>
+              ) : (
+                <div key={i} className={`howto-step ${checked.has(i) ? "done" : ""}`}>
+                  <button className="howto-cb" onClick={() => toggle(i)} aria-label={checked.has(i) ? "Mark not done" : "Mark done"}>
+                    {checked.has(i) && <Ico name="Check" size={11} color="#fff" />}
+                  </button>
+                  <span className="howto-step-t" onClick={() => toggle(i)}>
+                    {st.title || st.text || st}{st.detail ? <span className="howto-step-d">{st.detail}</span> : null}
+                  </span>
+                  <span className="howto-step-tools">
+                    <button onClick={() => setEditing(i)} title="Reword this step" aria-label="Edit step"><Ico name="Pencil" size={11} /></button>
+                    <button onClick={() => removeStep(i)} title="Remove this step" aria-label="Remove step"><Ico name="X" size={11} /></button>
+                  </span>
+                </div>
+              )
             ))}
+            <div className="howto-add">
+              <input value={draft} onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addStep(); }}
+                placeholder="Add a step of your own + Enter" />
+              <button className="tool-add" onClick={addStep} aria-label="Add step"><Ico name="Plus" size={13} /></button>
+            </div>
           </div>
           <button className="btn sm" onClick={() => onAsk && onAsk(`I'm a PhD student working on "${step.title}". Walk me through, step by step, how to: ${sub} Assume I'm new to this and give concrete first actions.`)}>
             <Ico name="MessageCircle" size={13} /> Ask your advisors for more
@@ -183,6 +275,19 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
   });
   const [openTask, setOpenTask] = useS2(-1); // which sub-task's "how to" drawer is open
   const [editPlan, setEditPlan] = useS2(false); // full inline editing of everything
+  // Documents that the analyser matched to a plan item. The plan is where you
+  // decide things, so the suggestion belongs here rather than on the shelf.
+  const [planDocs, setPlanDocs] = useS2([]);
+  useE2(() => {
+    const api = window.CoachAPI;
+    if (!api || !api.isAuthed || !api.isAuthed() || (api.token && api.token() === "demo-token")) return;
+    let alive = true;
+    api.listLibraryDocs()
+      .then(r => { if (alive) setPlanDocs(((r && r.documents) || []).filter(d => d.plan_link)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const dismissDocLink = (id) => setPlanDocs(p => p.filter(d => d.id !== id));
   const [dragIdx, setDragIdx] = useS2(null);
   const [renameId, setRenameId] = useS2(null);
   const csvRef = React.useRef(null);
@@ -243,7 +348,16 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
   const subCode = subView ? `${stepNum}${planLetter(selectedSub)}` : "";
 
   const toggleTask = (t) => {
-    setDoneTasks(prev => { const n = new Set(prev); const k = tkey(t); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    setDoneTasks(prev => {
+      const n = new Set(prev); const k = tkey(t); n.has(k) ? n.delete(k) : n.add(k);
+      // Checking the last step IS completing the milestone — there's nothing a
+      // separate button would add except a second thing to remember. Deferred a
+      // beat so the tick lands before the celebration, and out of the setState
+      // callback so we're not updating other state mid-update.
+      const finished = step.subtasks.length > 0 && step.subtasks.every(x => n.has(`${step.id}::${x}`));
+      if (finished && isCurrent) setTimeout(() => complete(step.id), 260);
+      return n;
+    });
     touchStep && touchStep(step.id);
   };
   const setCurrent = (id) => {
@@ -459,8 +573,13 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                   </button>
                   {spineOpen.has(s.id) && s.subtasks.length > 0 && (
                     <div className="spine-subs">
-                      {s.subtasks.map((t, j) => {
-                        const sd = doneTasks.has(`${s.id}::${t}`);
+                      {s.subtasks
+                        // Finished work sinks to the bottom so what's left is at
+                        // the top. The letter comes from the ORIGINAL position —
+                        // 1a stays 1a wherever it ends up on screen.
+                        .map((t, j) => ({ t, j, sd: doneTasks.has(`${s.id}::${t}`) }))
+                        .sort((a, b) => (a.sd === b.sd ? a.j - b.j : a.sd ? 1 : -1))
+                        .map(({ t, j, sd }) => {
                         const isSel = i === selected && selectedSub === j;
                         return (
                           <button key={j} className={`spine-sub ${isSel ? "sel" : ""} ${sd ? "done" : ""}`}
@@ -506,6 +625,32 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                   <button className="btn" onClick={() => setSelectedSub(null)}><Ico name="ArrowLeft" size={14} /> Back to milestone {stepNum}</button>
                 </div>
               </div>
+              {/* A document the analyser thinks finishes this sub-task. It only ever
+                  asks — silently ticking someone's milestone off a fuzzy match is
+                  a far worse failure than making them press one button. */}
+              {(() => {
+                const hits = planDocs.filter(d =>
+                  d.plan_link && d.plan_link.step_id === step.id && d.plan_link.subtask === subT);
+                if (!hits.length) return null;
+                const done = doneTasks.has(tkey(subT));
+                return hits.map(d => (
+                  <div key={d.id} className={`plan-doclink ${d.plan_link.relation === "evidence" ? "evidence" : ""}`}>
+                    <span className="plan-doclink-i"><Ico name="FileText" size={14} /></span>
+                    <span className="plan-doclink-t">
+                      <b>{d.name}</b>
+                      <em>{d.plan_link.relation === "evidence"
+                        ? `Looks like evidence that ${subCode} is done. ${d.plan_link.why || ""}`
+                        : `Related to ${subCode}. ${d.plan_link.why || ""}`}</em>
+                    </span>
+                    {d.plan_link.relation === "evidence" && !done && (
+                      <button className="btn sm primary" onClick={() => { toggleTask(subT); dismissDocLink(d.id); }}>
+                        <Ico name="Check" size={13} color="#fff" /> Mark {subCode} done
+                      </button>
+                    )}
+                    <button className="btn sm ghost" onClick={() => dismissDocLink(d.id)}>Dismiss</button>
+                  </div>
+                ));
+              })()}
               {risks.length > 0 && (
                 <div className="risks">
                   <div className="risks-h"><Ico name="Lightbulb" size={14} /> What trips people up here</div>
@@ -516,7 +661,9 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
               )}
               <div className="section-label"><span className="ic"><Ico name="ListChecks" size={13} /></span> Steps to complete {subCode} — and how to do them</div>
               <div className="subsheet-howto">
-                <PlanHowTo key={`${step.id}::${subT}`} roadmap={roadmap} step={step} sub={subT} code={subCode} onAsk={onAsk} />
+                <PlanHowTo key={`${step.id}::${subT}`} roadmap={roadmap} step={step} sub={subT} code={subCode} onAsk={onAsk}
+                  subDone={doneTasks.has(tkey(subT))}
+                  onAllDone={() => { if (!doneTasks.has(tkey(subT))) toggleTask(subT); }} />
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                 {selectedSub > 0 && <button className="btn sm" onClick={() => setSelectedSub(selectedSub - 1)}><Ico name="ChevronLeft" size={13} /> {stepNum}{planLetter(selectedSub - 1)}</button>}
@@ -632,8 +779,10 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                 </div>
               ))
             ) : (
-              step.subtasks.map((t, i) => {
-                const d = doneTasks.has(tkey(t));
+              step.subtasks
+                .map((t, i) => ({ t, i, d: doneTasks.has(tkey(t)) }))
+                .sort((a, b) => (a.d === b.d ? a.i - b.i : a.d ? 1 : -1))
+                .map(({ t, i, d }) => {
                 const open = openTask === i;
                 return (
                   <div key={i} className={`taskrow ${d ? "done" : ""} ${open ? "open" : ""}`}>
@@ -657,7 +806,9 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
                     </div>
                     {open && (
                       <div className="taskrow-actions">
-                        <PlanHowTo roadmap={roadmap} step={step} sub={t} code={`${stepNum}${planLetter(i)}`} onAsk={onAsk} />
+                        <PlanHowTo roadmap={roadmap} step={step} sub={t} code={`${stepNum}${planLetter(i)}`} onAsk={onAsk}
+                          subDone={d}
+                          onAllDone={() => { if (!d) toggleTask(t); }} />
                         {!d && <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => { toggleTask(t); setOpenTask(-1); }}><Ico name="Check" size={13} /> Mark {stepNum}{planLetter(i)} done</button>}
                       </div>
                     )}
@@ -673,15 +824,17 @@ function PlanView({ roadmap, setRoadmap, doneTasks, setDoneTasks, activity, touc
             </div>
           </div>
 
-          {/* Complete CTA */}
-          {isCurrent && !editPlan && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 24, padding: "18px 20px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r)" }}>
-              <div style={{ fontSize: 13.5, color: "var(--text-2)" }}>
-                {allDone ? <><b style={{ color: "var(--text)" }}>All steps checked.</b> Ready to celebrate this milestone.</> : `${step.subtasks.length - doneN} step${step.subtasks.length - doneN === 1 ? "" : "s"} left`}
-              </div>
-              <button className="btn primary lg" onClick={() => complete(step.id)} disabled={!allDone}>
-                <Ico name="Flag" size={15} color="#fff" /> Complete milestone
-              </button>
+          {/* Progress, not a CTA — checking the last step completes the milestone. */}
+          {isCurrent && !editPlan && step.subtasks.length > 0 && (
+            <div className="plan-progress-foot">
+              <span className="plan-progress-bar">
+                <i style={{ width: `${Math.round((doneN / step.subtasks.length) * 100)}%` }} />
+              </span>
+              <span className="plan-progress-t">
+                {allDone
+                  ? <><Ico name="Check" size={13} /> All steps checked — wrapping this milestone up.</>
+                  : <>{step.subtasks.length - doneN} step{step.subtasks.length - doneN === 1 ? "" : "s"} left. Check the last one and this milestone completes itself.</>}
+              </span>
             </div>
           )}
           </>
@@ -894,11 +1047,11 @@ const HELP_GLOSSARY = [
   ["Candidacy", "Officially cleared to do dissertation research (the paperwork after prelims)."]
 ];
 const HELP_FAQ = [
-  ["Why don't I see Actions yet?", "Actions unlock after 5 chat messages — or turn on “Reveal everything now” in Settings → Feature unlocks."],
+  ["Why don't I see Actions yet?", "The Actions page is parked while it's being rebuilt — everything else is available now."],
   ["How do I simplify my home screen?", "Set Display density to “Just what I need” in Settings."],
   ["Something went wrong with my research", "Use “Something came up?” on Home or My Plan — describe it in plain words and your plan re-routes around it."],
   ["Are my conversations private?", "Choose on-device / private models in Settings to keep processing local (slightly lower accuracy)."],
-  ["How do I get every feature right now?", "Settings → Feature unlocks → Reveal everything now."]
+  ["Is anything locked?", "No — every feature is available from the moment you sign in."]
 ];
 const SETTINGS_INSTITUTIONS = window.UNIVERSITY_OPTIONS || [];
 const SETTINGS_PROGRAMS = window.PROGRAM_OPTIONS || [];
@@ -1096,13 +1249,13 @@ function HelpCenter({ onClose, onReplayTour }) {
   );
 }
 
-function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs = {}, setPrefs, engagement = {}, unlocked = {}, onRevealAll, onResetDrip, onToggleHidden, onRebuild, onLoadTemplate, onReplayOnboarding, onSignOut }) {
+function SettingsView({ roadmap = null, setRoadmap, prefs = {}, setPrefs, onRebuild, onLoadTemplate, onReplayOnboarding, onSignOut }) {
   const [help, setHelp] = useS2(false);
   const currentInstitution = prefs.institution || roadmap?.program?.institution || "";
   const currentProgram = prefs.program || roadmap?.program?.name || "";
   const densityChoice = prefs.revealAll ? "everything" : (prefs.density === "focused" ? "minimal" : "balanced");
   const chooseDensity = (c) => {
-    if (c === "everything") { setPrefs && setPrefs(p => ({ ...p, density: "full" })); onRevealAll && onRevealAll(); }
+    if (c === "everything") { setPrefs && setPrefs(p => ({ ...p, density: "full" })); }
     else if (c === "balanced") { setPrefs && setPrefs(p => ({ ...p, density: "full", revealAll: false })); }
     else { setPrefs && setPrefs(p => ({ ...p, density: "focused", revealAll: false })); }
   };
@@ -1116,7 +1269,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
       return { ...r, program: { ...program, [key === "program" ? "name" : "institution"]: clean } };
     });
   };
-  const unlockRows = [["skills", "Actions library", "after 5 messages", 5]];
 
   return (
     <div className="page page-narrow">
@@ -1176,31 +1328,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
         </div>
       </div>
 
-      {/* Feature unlocks */}
-      <div className="card card-pad" style={{ marginBottom: 16 }}>
-        <div className="card-h"><span className="ico"><Ico name="Sparkles" size={14} /></span> Feature unlocks</div>
-        <div style={{ fontSize: 12.5, color: "var(--text-2)", margin: "2px 0 10px" }}>Advanced features open up as you use Chat ({engagement.messages || 0} messages so far).</div>
-        {unlockRows.map(([id, label, when, thr]) => {
-          const hidden = (prefs.hidden || []).includes(id);
-          const reached = prefs.revealAll || (engagement.messages || 0) >= thr;
-          const icon = hidden ? "EyeOff" : (unlocked[id] ? "CheckCircle2" : "Lock");
-          const color = hidden ? "var(--amber)" : (unlocked[id] ? "var(--sage)" : "var(--text-3)");
-          return (
-            <div key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }}>
-              <Ico name={icon} size={14} color={color} />
-              <span style={{ flex: 1 }}>{label}</span>
-              {reached
-                ? <button className="btn sm ghost" onClick={() => onToggleHidden && onToggleHidden(id)}>{hidden ? <><Ico name="Eye" size={13} /> Activate</> : <><Ico name="EyeOff" size={13} /> Hide</>}</button>
-                : <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{when}</span>}
-            </div>
-          );
-        })}
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          {!prefs.revealAll && <button className="btn sm primary" onClick={onRevealAll}><Ico name="Unlock" size={14} color="#fff" /> Reveal everything now</button>}
-          <button className="btn sm" onClick={onResetDrip}><Ico name="RefreshCw" size={14} /> Reset the drip</button>
-        </div>
-      </div>
-
       {/* Help */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="card-h"><span className="ico"><Ico name="LifeBuoy" size={14} /></span> Help &amp; learning</div>
@@ -1211,18 +1338,6 @@ function SettingsView({ roadmap = null, setRoadmap, theme, onToggleTheme, prefs 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--border)" }}>
           <div><div style={{ fontWeight: 600, fontSize: 14 }}>Replay welcome tour</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>Walk through what each page does again</div></div>
           <button className="btn sm" onClick={onReplayOnboarding}><Ico name="Rocket" size={14} /> Take the tour</button>
-        </div>
-      </div>
-
-      {/* Appearance */}
-      <div className="card card-pad" style={{ marginBottom: 16 }}>
-        <div className="card-h"><span className="ico"><Ico name="Palette" size={14} /></span> Appearance</div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0" }}>
-          <div><div style={{ fontWeight: 600, fontSize: 14 }}>Theme</div><div style={{ fontSize: 12, color: "var(--text-2)" }}>Warm light or cozy dark</div></div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className={`btn sm ${theme === "light" ? "primary" : ""}`} onClick={() => theme !== "light" && onToggleTheme()}><Ico name="Sun" size={14} color={theme==="light"?"#fff":undefined} /> Light</button>
-            <button className={`btn sm ${theme === "dark" ? "primary" : ""}`} onClick={() => theme !== "dark" && onToggleTheme()}><Ico name="Moon" size={14} color={theme==="dark"?"#fff":undefined} /> Dark</button>
-          </div>
         </div>
       </div>
 
@@ -1388,10 +1503,11 @@ function StepWorkspace({ roadmap, stepId, doneTasks, onToggleTask, onComplete, o
         </div>
 
         <div className="stepws-foot">
-          <span className="stepws-foot-note">{allDone ? "All steps checked — ready to complete." : `${step.subtasks.length - doneN} step${step.subtasks.length - doneN === 1 ? "" : "s"} left`}</span>
-          <button className="btn primary" disabled={!allDone || !isCurrent} onClick={() => { onComplete(step.id); onClose(); }}>
-            <Ico name="Flag" size={15} color="#fff" /> Complete milestone
-          </button>
+          <span className="stepws-foot-note">
+            {allDone
+              ? "All steps checked — this milestone is complete."
+              : `${step.subtasks.length - doneN} step${step.subtasks.length - doneN === 1 ? "" : "s"} left — the milestone completes itself when they're done.`}
+          </span>
         </div>
 
         {craft && <CraftToolModal stepTitle={step.title}
@@ -1501,7 +1617,9 @@ function CoachRoot() {
   if (window.CoachAPI && window.CoachAPI.isAuthed()) window.MOCK_USER = window.CoachAPI.getUser();
   const [gate, setGate] = useS2("landing"); // landing | login
   const [view, setView] = useS2("home");
-  const [theme, setTheme] = useS2(() => { try { return localStorage.getItem(H.THEME_KEY) || "light"; } catch (e) { return "light"; } });
+  // One theme. Dark mode is not a user-facing option, so a stored "dark"
+  // preference is cleared rather than leaving anyone in a palette nothing
+  // is designed against.
   const [doneTasks, setDoneTasks] = useS2(() => new Set(H.loadJSON(H.TASK_KEY, [])));
   const [celebrate, setCelebrate] = useS2(null);
   const [sosOpen, setSosOpen] = useS2(false);
@@ -1553,7 +1671,7 @@ function CoachRoot() {
     setPrefs(p => ({ ...p, hidden: [...new Set([...(p.hidden || []), id])] }));
     setSeenUnlocks(s => s.includes(id) ? s : [...s, id]);
     setUnlockPopup(null);
-    setToast("Hidden for now — turn it back on anytime in Settings → Feature unlocks.");
+    setToast("Hidden for now.");
   };
   const toggleHidden = (id) => setPrefs(p => { const h = new Set(p.hidden || []); h.has(id) ? h.delete(id) : h.add(id); return { ...p, hidden: [...h] }; });
   const revealAllNow = () => { setPrefs(p => ({ ...p, revealAll: true, hidden: [] })); setSeenUnlocks(["skills"]); setUnlockPopup(null); };
@@ -1600,7 +1718,27 @@ function CoachRoot() {
     return () => window.removeEventListener("phd-open-chat", onOpenChat);
   }, []);
 
-  useE2(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem(H.THEME_KEY, theme); } catch (e) {} }, [theme]);
+  useE2(() => {
+    document.documentElement.dataset.theme = "light";
+    try { localStorage.removeItem(H.THEME_KEY); } catch (e) {}
+  }, []);
+  // Pull the account's copy of the device-mirrored stores (document shelf, AI
+  // walkthroughs, activity log, defense history…) before anything reads them.
+  // If the API is unreachable this is a no-op and the device copy stands.
+  useE2(() => {
+    if (!authed) return;
+    if (window.hydrateMirrored) window.hydrateMirrored().catch(() => {});
+    if (window.flushSyncOutbox) window.flushSyncOutbox();
+  }, [authed]);
+
+  // Anything stranded by an outage goes up the moment the tab is active again.
+  useE2(() => {
+    const retry = () => { if (window.flushSyncOutbox) window.flushSyncOutbox(); };
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    return () => { window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
+  }, []);
+
   useE2(() => { H.saveJSON(H.RM_KEY, roadmap); }, [roadmap]);
   useE2(() => { H.saveJSON(H.TASK_KEY, [...doneTasks]); }, [doneTasks]);
   // Best-effort backend backup of the plan + progress, so signing in from a new
@@ -1646,7 +1784,6 @@ function CoachRoot() {
     if (!done) { setView("home"); setShowTour(true); }
   }, [authed, !!roadmap]);
 
-  const toggleTheme = () => setTheme(t => t === "light" ? "dark" : "light");
 
   const handleReplan = (text) => {
     const res = RE2.replan(roadmap, text);
@@ -1770,26 +1907,32 @@ function CoachRoot() {
       onComplete={(rm, p) => { setRebuildProfile(null); setRoadmap(rm); if (p) setPrefs(prev => ({ ...prev, ...p })); setView("home"); }} />;
   }
 
-  const signOut = () => { if (window.CoachAPI) window.CoachAPI.clearAuth(); setRebuildProfile(null); setAuthed(false); setGate("landing"); setView("home"); };
+  const signOut = () => {
+    if (window.CoachAPI) window.CoachAPI.clearAuth();
+    // In-memory caches outlive a sign-out because the page never reloads. Both
+    // hold the previous account's data and must go with them.
+    if (window.resetWorkspaceCache) window.resetWorkspaceCache();
+    if (window.clearInsightsWarm) window.clearInsightsWarm();
+    setRebuildProfile(null); setAuthed(false); setGate("landing"); setView("home");
+  };
   // Sanitize view: Skills isn't reachable until unlocked, and Workspace is not
   // its own page — its tools live on Home (in the Tools popup), so redirect there.
   const v = (view === "skills" && !unlocked.skills) ? "home" : (view === "workspace" ? "home" : view);
 
   let body;
-  if (v === "home") body = <window.CoachDashboard roadmap={roadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} onNav={setView} onOpenSos={() => setSosOpen(true)} onOpenStep={openWorkspace} focused={focused} theme={theme} />;
+  if (v === "home") body = <window.CoachDashboard roadmap={roadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} onNav={setView} onOpenSos={() => setSosOpen(true)} onOpenStep={openWorkspace} focused={focused} />;
   // My Plan uses the V2 PlanView (the version deployed on main); the newer
   // spreadsheet (CoachPlanSheet) is retired while we redo this section.
   else if (v === "plan") body = <PlanView roadmap={roadmap} setRoadmap={setRoadmap} doneTasks={doneTasks} setDoneTasks={setDoneTasks} activity={activity} touchStep={touchStep} onCelebrate={setCelebrate} onOpenSos={() => setSosOpen(true)} onAsk={askInChat} onNav={setView} onOpenStep={openWorkspace} skillsUnlocked={unlocked.skills} searchTarget={planSearchTarget} />;
-  else if (v === "chat") body = <window.CoachChatView roadmap={roadmap} setRoadmap={setRoadmap} onNav={setView} onToast={setToast} seed={chatSeed} freshChatKey={freshChatKey} onFreshChatConsumed={() => setFreshChatKey(0)} onSeedConsumed={() => setChatSeed(null)} unlocked={unlocked} onMessage={bumpMessages} savedChatTarget={savedChatTarget} onSavedChatConsumed={() => setSavedChatTarget(null)} onOpenPlanItem={(stepId, taskIndex) => { setPlanSearchTarget({ stepId, taskIndex, nonce: Date.now() }); setView("plan"); }} />;
+  else if (v === "chat") body = <window.CoachChatView roadmap={roadmap} setRoadmap={setRoadmap} onNav={setView} onToast={setToast} seed={chatSeed} freshChatKey={freshChatKey} onFreshChatConsumed={() => setFreshChatKey(0)} onSeedConsumed={() => setChatSeed(null)} onMessage={bumpMessages} savedChatTarget={savedChatTarget} onSavedChatConsumed={() => setSavedChatTarget(null)} onOpenPlanItem={(stepId, taskIndex) => { setPlanSearchTarget({ stepId, taskIndex, nonce: Date.now() }); setView("plan"); }} />;
   else if (v === "meetings") body = <window.CoachMeetings onToast={setToast} />;
   else if (v === "skills") body = <window.CoachSkills roadmap={roadmap} onNav={setView} />;
   else if (v === "insights") body = <window.CoachInsights onNav={setView} roadmap={roadmap} doneTasks={doneTasks} />;
   else if (v === "defense") body = <window.CoachDefenseRoom roadmap={roadmap} onNav={setView} onToast={setToast} />;
   else if (v === "documents") body = <window.CoachDocuments roadmap={roadmap} />;
   else if (v === "wellness") body = <window.CoachWellness onNav={setView} roadmap={roadmap} setRoadmap={setRoadmap} onToast={setToast} />;
-  else body = <SettingsView roadmap={roadmap} setRoadmap={setRoadmap} theme={theme} onToggleTheme={toggleTheme}
-    prefs={prefs} setPrefs={setPrefs} engagement={engagement} unlocked={unlocked}
-    onRevealAll={revealAllNow} onResetDrip={resetDrip} onToggleHidden={toggleHidden}
+  else body = <SettingsView roadmap={roadmap} setRoadmap={setRoadmap}
+    prefs={prefs} setPrefs={setPrefs}
     onRebuild={() => { if (confirm("Rebuild your plan from scratch? Progress clears.")) { setRebuildProfile(buildAcademicProfile(signedInUserProfile(), prefs, roadmap)); setRoadmap(null); setDoneTasks(new Set()); } }}
     onLoadTemplate={loadTemplatePlan}
     onReplayOnboarding={() => { setView("home"); setShowTour(true); }}

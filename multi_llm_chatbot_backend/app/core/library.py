@@ -65,6 +65,7 @@ def _doc_public(doc: Dict[str, Any], include_content: bool = True) -> Dict[str, 
         "analysis_status": doc.get("analysis_status") or "none",
         "analysis": doc.get("analysis") or None,
         "comparison": doc.get("comparison") or None,
+        "plan_link": doc.get("plan_link") or None,
         "created_at": (doc.get("created_at") or _now()).isoformat(),
         "updated_at": (doc.get("updated_at") or _now()).isoformat(),
     }
@@ -104,6 +105,26 @@ async def save_document_record(
     existing = await db[DOCUMENTS_COLLECTION].find_one(
         {"user_id": user_id, "filename": filename}
     )
+
+    # Identical content under a DIFFERENT name is still the same document. The
+    # filename lookup above only catches a re-upload of the same file; saving
+    # "Ch3.docx" again as "Ch3-final.docx" used to produce a second full copy,
+    # because the hash was only ever compared after a filename match.
+    if not existing or existing.get("content_hash") != digest:
+        twin = await db[DOCUMENTS_COLLECTION].find_one(
+            {"user_id": user_id, "content_hash": digest}
+        )
+        if twin:
+            # Keep the newer name — that's the one the person just chose — but
+            # do not create a second row for the same bytes.
+            await db[DOCUMENTS_COLLECTION].update_one(
+                {"_id": twin["_id"]},
+                {"$set": {"updated_at": now, "filename": filename,
+                          "name": name or twin.get("name") or re.sub(r"\.[^.]+$", "", filename)}},
+            )
+            twin["updated_at"] = now
+            twin["filename"] = filename
+            return _doc_public(twin, include_content=False)
 
     if existing and existing.get("content_hash") == digest:
         # Same file re-synced — refresh timestamp only.
@@ -164,6 +185,7 @@ async def list_documents_for_rag(user_id: str) -> List[Dict[str, Any]]:
             "name": 1,
             "content": 1,
             "content_hash": 1,
+            "plan_link": 1,
             "file_type": 1,
             "source": 1,
             "updated_at": 1,
@@ -344,6 +366,156 @@ def _extract_urls(text: str) -> List[str]:
     return urls
 
 
+# ---------------------------------------------------------------------------
+# Documents <-> plan <-> brain
+#
+# Three things in this app know about your work and none of them used to talk:
+# the document shelf, the knowledge markdown ("the brain"), and the plan. So you
+# could upload a signed IRB approval and the plan would still show "Get IRB
+# approval" as outstanding, and chat would have no idea the evidence existed.
+#
+# This links them at the one moment we already have the text in hand: analysis.
+# The model is asked which milestone or sub-task the document belongs to and
+# whether it is *evidence that the work is done* — and the answer is written to
+# the document, and into the brain so chat and Insights inherit it.
+#
+# It SUGGESTS; it never ticks anything off. Matching a file to a step is a
+# judgement call, and silently completing someone's milestone on a wrong guess
+# is a much worse failure than leaving it for them to confirm.
+# ---------------------------------------------------------------------------
+PLAN_LINK_MIN_CONFIDENCE = 0.55
+
+
+async def _load_roadmap(user_id: str) -> Dict[str, Any]:
+    """The plan the frontend backs up to workspace state."""
+    db = get_database()
+    if db is None:
+        return {}
+    try:
+        doc = await db.user_workspace.find_one({"user_id": user_id})
+        rm = ((doc or {}).get("sections") or {}).get("roadmap") or {}
+        return rm if isinstance(rm, dict) else {}
+    except Exception:
+        return {}
+
+
+def _plan_index(roadmap: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Flatten the plan into addressable targets: milestones and sub-tasks."""
+    out: List[Dict[str, Any]] = []
+    for i, step in enumerate(roadmap.get("steps") or []):
+        if not isinstance(step, dict) or not step.get("title"):
+            continue
+        code = str(i + 1)
+        out.append({"ref": code, "step_id": step.get("id"), "step_title": step["title"],
+                    "subtask": None, "objective": step.get("objective") or ""})
+        for j, sub in enumerate(step.get("subtasks") or []):
+            letter = ""
+            n = j
+            while True:
+                letter = chr(97 + (n % 26)) + letter
+                n = n // 26 - 1
+                if n < 0:
+                    break
+            out.append({"ref": f"{code}{letter}", "step_id": step.get("id"),
+                        "step_title": step["title"], "subtask": sub, "objective": ""})
+    return out
+
+
+async def link_document_to_plan(user_id: str, doc: Dict[str, Any],
+                                analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Ask which plan item this document belongs to. Returns a link or None."""
+    roadmap = await _load_roadmap(user_id)
+    targets = _plan_index(roadmap)
+    if not targets:
+        return None
+
+    listing = "\n".join(
+        f"{t['ref']}: {t['subtask'] or t['step_title']}"
+        + (f"  (under {t['step_title']})" if t["subtask"] else "")
+        for t in targets[:80]
+    )
+    system = (
+        "You match a PhD student's uploaded document to their plan.\n"
+        "Respond ONLY with JSON: "
+        '{"ref": "<plan ref like 3 or 3b, or empty string>", '
+        '"relation": "evidence" | "related" | "none", '
+        '"confidence": 0.0-1.0, "why": "one short sentence"}\n'
+        "Use \"evidence\" ONLY when the document shows the work is actually finished "
+        "(a signed form, an approval letter, a submitted draft) — not when it is "
+        "merely about the topic. Use \"related\" when it belongs to that step but "
+        "does not finish it. Use \"none\" and an empty ref when nothing fits; that "
+        "is a perfectly good answer and better than a guess."
+    )
+    user = (
+        f"DOCUMENT: {doc.get('name') or doc.get('filename')}\n"
+        f"SUMMARY: {(analysis or {}).get('summary') or ''}\n"
+        f"TOPICS: {', '.join((analysis or {}).get('topics') or [])}\n"
+        f"FIRST WORDS: {(doc.get('content') or '')[:1200]}\n\n"
+        f"PLAN ITEMS:\n{listing}"
+    )
+    try:
+        from app.llm.clients.provider_manager import create_llm_client
+        raw = await create_llm_client().generate(
+            system_prompt=system, context=[{"role": "user", "content": user}],
+            temperature=0.1, max_tokens=300, response_mime_type="application/json",
+        )
+        parsed = json.loads(re.sub(r"^```(?:json)?|```$", "", (raw or "").strip(), flags=re.MULTILINE).strip())
+    except Exception as exc:
+        logger.warning("Plan link failed for %s: %s", doc.get("filename"), exc)
+        return None
+
+    ref = str(parsed.get("ref") or "").strip()
+    relation = parsed.get("relation") if parsed.get("relation") in ("evidence", "related") else None
+    try:
+        confidence = float(parsed.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if not ref or not relation or confidence < PLAN_LINK_MIN_CONFIDENCE:
+        return None
+    target = next((t for t in targets if t["ref"].lower() == ref.lower()), None)
+    if not target:
+        return None
+
+    return {
+        "ref": target["ref"],
+        "step_id": target["step_id"],
+        "step_title": target["step_title"],
+        "subtask": target["subtask"],
+        "relation": relation,
+        "confidence": round(confidence, 2),
+        "why": str(parsed.get("why") or "")[:240],
+        "linked_at": _now().isoformat(),
+        # The person decides. Set once they accept or dismiss the suggestion.
+        "acknowledged": False,
+    }
+
+
+async def _write_plan_evidence_section(user_id: str) -> None:
+    """One consolidated brain section, so chat can see what's backed by a file."""
+    db = get_database()
+    if db is None:
+        return
+    cursor = db[DOCUMENTS_COLLECTION].find(
+        {"user_id": user_id, "plan_link": {"$ne": None}},
+        {"name": 1, "filename": 1, "plan_link": 1},
+    )
+    rows = [d async for d in cursor]
+    if not rows:
+        return
+    rows.sort(key=lambda d: (d.get("plan_link") or {}).get("ref") or "")
+    lines = ["Documents the student has uploaded that relate to specific plan items:"]
+    for d in rows:
+        link = d.get("plan_link") or {}
+        what = link.get("subtask") or link.get("step_title")
+        verb = "evidences completion of" if link.get("relation") == "evidence" else "relates to"
+        lines.append(f"- \"{d.get('name') or d.get('filename')}\" {verb} {link.get('ref')} — {what}")
+    lines.append(
+        "- Treat these as the student's own records. If they ask whether something "
+        "is done, say what the document shows rather than guessing."
+    )
+    await upsert_knowledge_section(user_id, "Plan evidence", "\n".join(lines))
+
+
 async def analyze_document(user_id: str, doc_id: str) -> None:
     """Summarize a document, follow its links, and record learnings."""
     db = get_database()
@@ -424,6 +596,18 @@ async def analyze_document(user_id: str, doc_id: str) -> None:
         {"_id": doc["_id"]},
         {"$set": {"analysis": analysis, "analysis_status": "done"}},
     )
+
+    # Now that the text is understood, work out where it belongs in the plan and
+    # tell the brain. Best-effort: a failure here must not fail the analysis.
+    try:
+        link = await link_document_to_plan(user_id, doc, analysis)
+        if link:
+            await db[DOCUMENTS_COLLECTION].update_one(
+                {"_id": doc["_id"]}, {"$set": {"plan_link": link}}
+            )
+            await _write_plan_evidence_section(user_id)
+    except Exception as exc:
+        logger.warning("Could not link %s to the plan: %s", doc.get("filename"), exc)
 
     # Fold learnings into the user's knowledge markdown for chat context.
     lines: List[str] = []

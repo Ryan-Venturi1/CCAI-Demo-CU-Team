@@ -465,7 +465,8 @@ function Rail({ view, onNav, user, skillsUnlocked = true, onSignOut }) {
     { id: "documents", label: "Documents", icon: "FileText" },
     { id: "wellness", label: "Wellbeing", icon: "Heart" },
     { id: "settings", label: "Settings", icon: "Settings" }
-  ].filter(it => it.id !== "skills"); // Skills page temporarily hidden for beta
+  // Pages parked for beta. One list, so putting either back is a one-line change.
+  ].filter(it => !["skills", "wellness"].includes(it.id));
   return (
     <nav className="rail" aria-label="Primary">
       <div className="rail-brand">

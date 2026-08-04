@@ -3257,3 +3257,49 @@ button, input, textarea, select { font-family: inherit; }
    the reason you came here) but never hidden behind a scroll or a tab. */
 .dh-support-foot { margin: 22px 0 8px; background: transparent; border-style: dashed; }
 .dh-support-foot:hover { background: var(--surface); border-style: solid; }
+
+/* My Plan — the milestone footer is a progress read-out now, not a button.
+   Checking the last sub-task completes the milestone, so there is nothing to press. */
+.plan-progress-foot { display: flex; align-items: center; gap: 14px; margin-top: 24px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
+.plan-progress-bar { flex: 0 0 120px; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.plan-progress-bar i { display: block; height: 100%; border-radius: 999px; background: var(--grad); transition: width .3s cubic-bezier(.2,.8,.3,1); }
+.plan-progress-t { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--text-2); }
+
+/* Defense Room — picking an existing document instead of re-uploading one. */
+.def-shelf-row { display: flex; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); margin-bottom: 8px; }
+.def-shelf-row:hover { background: var(--surface-2); border-color: var(--border-2); }
+.def-shelf-i { width: 30px; height: 30px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--primary-soft); color: var(--primary-deep); }
+.def-shelf-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.def-shelf-t b { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.def-shelf-t em { font-style: normal; font-size: 11.5px; color: var(--text-3); }
+
+/* My Plan — a finished how-to folds to one line. It has done its job; the five
+   ticked boxes and a Regenerate button were just occupying the page. */
+.howto.howto-done { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; background: var(--sage-soft); border: 1px solid var(--sage); border-radius: var(--r-sm); }
+.howto-done-t { display: inline-flex; align-items: center; gap: 7px; flex: 1; min-width: 180px; font-size: 13px; font-weight: 600; color: var(--sage); }
+.howto.howto-done .btn { background: transparent; }
+
+/* My Plan how-to — the AI's steps are editable. It doesn't know your department,
+   so any step can be reworded, removed, or joined by one of your own. */
+.howto-step { display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; }
+.howto-step .howto-cb { border: none; cursor: pointer; flex: none; }
+.howto-step .howto-step-t { cursor: pointer; flex: 1; min-width: 0; }
+.howto-step-tools { display: flex; gap: 2px; opacity: 0; transition: opacity .14s ease; flex: none; }
+.howto-step:hover .howto-step-tools, .howto-step:focus-within .howto-step-tools { opacity: 1; }
+.howto-step-tools button { border: none; background: transparent; color: var(--text-3); cursor: pointer; padding: 3px 4px; border-radius: 6px; line-height: 0; }
+.howto-step-tools button:hover { background: var(--surface-2); color: var(--primary-deep); }
+.howto-edit { flex: 1; min-width: 0; border: 1px solid var(--primary); border-radius: 7px; padding: 5px 8px; font: inherit; font-size: 13px; background: var(--surface); color: var(--text); }
+.howto-add { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.howto-add input { flex: 1; min-width: 0; border: 1px dashed var(--border-2); border-radius: 7px; padding: 6px 9px; font: inherit; font-size: 12.5px; background: transparent; color: var(--text); }
+.howto-add input:focus { border-style: solid; border-color: var(--primary); outline: none; }
+
+/* My Plan — a document the analyser matched to this sub-task. It suggests; the
+   person decides. Evidence (a signed form, an approval) gets the sage treatment
+   and a one-click complete; merely related documents just announce themselves. */
+.plan-doclink { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 12px 0 0; padding: 11px 14px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+.plan-doclink.evidence { border-color: var(--sage); background: var(--sage-soft); }
+.plan-doclink-i { width: 28px; height: 28px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--surface); color: var(--primary-deep); }
+.plan-doclink.evidence .plan-doclink-i { color: var(--sage); }
+.plan-doclink-t { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; }
+.plan-doclink-t b { font-size: 13.5px; }
+.plan-doclink-t em { font-style: normal; font-size: 12px; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }

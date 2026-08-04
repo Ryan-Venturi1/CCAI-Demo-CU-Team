@@ -672,71 +672,81 @@ window.CoachActions = CoachActions;
 
 // ---- Skills: reusable workflows the chat can run ----------------------------
 // Each returns an "action result" describing what changed + where to see it.
-const SKILLS = [
-  {
-    id: "todo", name: "Build a to-do list", icon: "ListChecks", to: "workspace",
-    blurb: "Turn this step into a Task Board on your Workspace.",
-    run: (ctx) => {
-      const tasks = (ctx.current.subtasks && ctx.current.subtasks.length ? ctx.current.subtasks.slice(0, 6)
-        : ["Define the goal for this step", "Break it into 3 concrete actions", "Schedule the first one"]);
-      CoachActions.addWidget("kanban", tasks);
-      return { icon: "ListChecks", title: "Task Board created", to: "workspace", cta: "Open Workspace",
-        body: `I added a Task Board to your Workspace with ${tasks.length} tasks drawn from “${ctx.current.title}.” Check them off as you go.`,
-        items: tasks };
-    }
-  },
-  {
-    id: "meeting", name: "Draft advisor meeting prep", icon: "MessageSquare", to: "documents",
-    blurb: "Generate a meeting-prep doc you can edit and bring to your 1:1.",
-    run: (ctx) => {
-      CoachActions.createDoc("meeting-prep", "Advisor Meeting Prep — this week", {
-        agenda: `1. Progress on ${ctx.current.title}\n2. Open questions\n3. Decisions I need from you`,
-        progress: `Currently working on “${ctx.current.title}.” ${ctx.current.objective}`,
-        blockers: "• (Name anything slowing you down here)",
-        decisions: "• (What do you need your advisor to decide or approve?)"
-      });
-      return { icon: "MessageSquare", title: "Meeting prep drafted", to: "documents", cta: "Open in Documents",
-        body: "I created an editable Advisor Meeting Prep draft in Documents, pre-filled from where you are now. Add your blockers and you're ready." };
-    }
-  },
-  {
-    id: "outline", name: "Outline a chapter", icon: "List", to: "documents",
-    blurb: "Scaffold a thesis chapter so writing has somewhere to start.",
-    run: (ctx) => {
-      CoachActions.createDoc("thesis-chapter", `Chapter outline — ${ctx.current.title}`, {
-        "s-0": "Opening: the question this chapter answers and why it matters.",
-        "s-1": "Background / prior work this chapter builds on.",
-        "s-2": "Core argument or method — the spine of the chapter.",
-        "s-3": "Evidence, results, or analysis.",
-        "s-4": "What it means + the bridge to the next chapter."
-      });
-      return { icon: "List", title: "Chapter outline created", to: "documents", cta: "Open in Documents",
-        body: "I scaffolded a thesis-chapter draft in Documents with five sections. Replace the prompts with your content." };
-    }
-  },
-  {
-    id: "reading", name: "Build a reading plan", icon: "BookOpen", to: "workspace",
-    blurb: "Add a Reading Queue widget seeded with starter papers.",
-    run: (ctx) => {
-      const papers = ["Seminal paper in your area (most-cited)", "A recent review (last 2 years)", "The closest methods paper to your design", "One strong counter-argument to your thesis"];
-      CoachActions.addWidget("reading-queue", papers);
-      return { icon: "BookOpen", title: "Reading plan added", to: "workspace", cta: "Open Workspace",
-        body: `I added a Reading Queue to your Workspace with ${papers.length} starting points tuned to “${ctx.current.title}.”`,
-        items: papers };
-    }
-  },
-  {
-    id: "summary", name: "Summarize my week", icon: "TrendingUp", to: "workspace",
-    blurb: "Drop a progress note into a Daily Documenter widget.",
-    run: (ctx) => {
-      const note = `Weekly summary · focused on “${ctx.current.title}.” ${ctx.current.objective} Next: pick the single most important task and protect two hours for it.`;
-      CoachActions.addWidget("documenter", [note]);
-      return { icon: "TrendingUp", title: "Weekly summary saved", to: "workspace", cta: "Open Workspace",
-        body: "I summarized where you are into a Daily Documenter note on your Workspace." };
-    }
-  }
-];
-window.CHAT_SKILLS = SKILLS;
+// ---------------------------------------------------------------------------
+// PARKED — in-composer Actions.
+//
+// Chat no longer runs actions from the composer; Actions have their own page.
+// Kept commented rather than deleted because we intend to come back to this —
+// deleting it would mean rebuilding the catalogue and its wiring from scratch.
+//
+// To bring it back: uncomment, then re-add the composer entry point that used
+// window.CHAT_SKILLS (nothing consumes that export today).
+// ---------------------------------------------------------------------------
+// const SKILLS = [
+//   {
+//     id: "todo", name: "Build a to-do list", icon: "ListChecks", to: "workspace",
+//     blurb: "Turn this step into a Task Board on your Workspace.",
+//     run: (ctx) => {
+//       const tasks = (ctx.current.subtasks && ctx.current.subtasks.length ? ctx.current.subtasks.slice(0, 6)
+//         : ["Define the goal for this step", "Break it into 3 concrete actions", "Schedule the first one"]);
+//       CoachActions.addWidget("kanban", tasks);
+//       return { icon: "ListChecks", title: "Task Board created", to: "workspace", cta: "Open Workspace",
+//         body: `I added a Task Board to your Workspace with ${tasks.length} tasks drawn from “${ctx.current.title}.” Check them off as you go.`,
+//         items: tasks };
+//     }
+//   },
+//   {
+//     id: "meeting", name: "Draft advisor meeting prep", icon: "MessageSquare", to: "documents",
+//     blurb: "Generate a meeting-prep doc you can edit and bring to your 1:1.",
+//     run: (ctx) => {
+//       CoachActions.createDoc("meeting-prep", "Advisor Meeting Prep — this week", {
+//         agenda: `1. Progress on ${ctx.current.title}\n2. Open questions\n3. Decisions I need from you`,
+//         progress: `Currently working on “${ctx.current.title}.” ${ctx.current.objective}`,
+//         blockers: "• (Name anything slowing you down here)",
+//         decisions: "• (What do you need your advisor to decide or approve?)"
+//       });
+//       return { icon: "MessageSquare", title: "Meeting prep drafted", to: "documents", cta: "Open in Documents",
+//         body: "I created an editable Advisor Meeting Prep draft in Documents, pre-filled from where you are now. Add your blockers and you're ready." };
+//     }
+//   },
+//   {
+//     id: "outline", name: "Outline a chapter", icon: "List", to: "documents",
+//     blurb: "Scaffold a thesis chapter so writing has somewhere to start.",
+//     run: (ctx) => {
+//       CoachActions.createDoc("thesis-chapter", `Chapter outline — ${ctx.current.title}`, {
+//         "s-0": "Opening: the question this chapter answers and why it matters.",
+//         "s-1": "Background / prior work this chapter builds on.",
+//         "s-2": "Core argument or method — the spine of the chapter.",
+//         "s-3": "Evidence, results, or analysis.",
+//         "s-4": "What it means + the bridge to the next chapter."
+//       });
+//       return { icon: "List", title: "Chapter outline created", to: "documents", cta: "Open in Documents",
+//         body: "I scaffolded a thesis-chapter draft in Documents with five sections. Replace the prompts with your content." };
+//     }
+//   },
+//   {
+//     id: "reading", name: "Build a reading plan", icon: "BookOpen", to: "workspace",
+//     blurb: "Add a Reading Queue widget seeded with starter papers.",
+//     run: (ctx) => {
+//       const papers = ["Seminal paper in your area (most-cited)", "A recent review (last 2 years)", "The closest methods paper to your design", "One strong counter-argument to your thesis"];
+//       CoachActions.addWidget("reading-queue", papers);
+//       return { icon: "BookOpen", title: "Reading plan added", to: "workspace", cta: "Open Workspace",
+//         body: `I added a Reading Queue to your Workspace with ${papers.length} starting points tuned to “${ctx.current.title}.”`,
+//         items: papers };
+//     }
+//   },
+//   {
+//     id: "summary", name: "Summarize my week", icon: "TrendingUp", to: "workspace",
+//     blurb: "Drop a progress note into a Daily Documenter widget.",
+//     run: (ctx) => {
+//       const note = `Weekly summary · focused on “${ctx.current.title}.” ${ctx.current.objective} Next: pick the single most important task and protect two hours for it.`;
+//       CoachActions.addWidget("documenter", [note]);
+//       return { icon: "TrendingUp", title: "Weekly summary saved", to: "workspace", cta: "Open Workspace",
+//         body: "I summarized where you are into a Daily Documenter note on your Workspace." };
+//     }
+//   }
+// ];
+// window.CHAT_SKILLS = SKILLS;
 
 // ---- Persona reply generator (demo content; wire to backend later) ----------
 function personaReply(advisor, current) {
@@ -762,13 +772,10 @@ function responseStageText(phase, data = {}) {
       return data.advisor_skill_name
         ? `Using ${data.advisor_skill_name} for this answer...`
         : "Shaping the answer plan...";
-    case "advisor_selected":
-      if (Array.isArray(data.persona_names) && data.persona_names.length > 1) {
-        return `Sending this to ${data.persona_names.length} advisors...`;
-      }
-      return data.persona_name
-        ? `Sending this to ${data.persona_name}...`
-        : "Sending this to your advisor...";
+      case "advisor_selected":
+        // One assistant, so there is nothing to announce a choice between. The
+        // event still arrives from the API; it just no longer names a persona.
+        return "Working on your answer...";
     case "preparing_clarification":
       return "Preparing a quick follow-up question...";
     case "rag_checking_documents":
@@ -990,7 +997,7 @@ function GroundingDetails({ grounding, onOpenDocument }) {
 }
 
 // ============================================================================
-function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey = 0, onFreshChatConsumed, onSeedConsumed, unlocked = { skills: true }, onMessage, savedChatTarget, onSavedChatConsumed, onOpenPlanItem }) {
+function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey = 0, onFreshChatConsumed, onSeedConsumed, onMessage, savedChatTarget, onSavedChatConsumed, onOpenPlanItem }) {
   const defaultStep = roadmap.steps.find(s => s.status === "current") || roadmap.steps.find(s => s.status === "redo") || roadmap.steps[0];
   const current = defaultStep;
   const [messages, setMessages] = useSC([]);
@@ -1075,9 +1082,11 @@ function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey
     onSeedConsumed && onSeedConsumed();
   }, [seed]);
   const makeMsgId = (prefix) => `${prefix}${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
-  const normalizeAdvisorId = (data = {}) => data.persona_id || data.personaId || data.advisor_id || data.advisorId || data.advisor || "";
+  // The API emits persona_id / persona_name. The advisor_id / advisorId / advisor
+  // aliases were from the multi-advisor era and never appear on the wire now.
+  const normalizeAdvisorId = (data = {}) => data.persona_id || data.personaId || "";
   const advisorDisplayName = (data = {}) => {
-    return data.persona_name || data.personaName || data.advisorName || CHAT_ASSISTANT.name;
+    return data.persona_name || data.personaName || CHAT_ASSISTANT.name;
   };
   const updateStreamingAdvisorStatus = (personaId, status) => {
     setMessages(prev => prev.map(m => (
@@ -1239,6 +1248,9 @@ function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey
     const API = window.CoachAPI;
     const docNote = docs.length ? `\n\n📎 Attached: ${docs.join(", ")}` : "";
     const content = opts.content || ((t || "(see attached documents)") + docNote);
+    // There is no advisor picker any more — one assistant, always. The API still
+    // takes an ordered list (it supports comparisons), and "standard" is its own
+    // neutral default, so this is the contract rather than a leftover choice.
     const targetAdvisorIds = [CHAT_ASSISTANT.id];
     const userMsg = {
       id: opts.userMessageId || makeMsgId("u"),
@@ -1272,7 +1284,7 @@ function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey
         try { ragSyncedDocuments = await syncDocumentsToRag(sid, files); }
         catch (syncErr) {
           ragSyncedDocuments = syncErr.syncedDocuments || [];
-          onToast && onToast("Some documents could not be synced to advisor search.");
+          onToast && onToast("Some documents could not be synced, so answers may not cite them yet.");
         }
       }
 
@@ -1393,7 +1405,7 @@ function CoachChatView({ roadmap, setRoadmap, onNav, onToast, seed, freshChatKey
           id: makeMsgId("e"),
           type: "advisor",
           personaId: CHAT_ASSISTANT.id,
-          content: "Your backend session was rejected, so I could not reach the real advisor model. Please sign out and sign in or sign up again, then resend your question."
+          content: "Your session was rejected, so I could not reach the model. Sign out and back in, then resend your question."
         }]);
         return;
       }

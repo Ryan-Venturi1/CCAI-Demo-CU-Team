@@ -38,6 +38,17 @@ WORKSPACE_SECTIONS = {
     # Plan backup: "roadmap" holds the roadmap object, "progress" the list of
     # completed task keys — synced so sign-in on a new device restores the plan.
     "roadmap", "progress",
+    # Everything below used to live only in localStorage, which meant it was one
+    # cleared browser away from gone and never followed you to a second device.
+    # The account is the source of truth now; the device is a cache.
+    "docshelf",        # locally-authored documents (Action output, meeting records)
+    "walkthroughs",    # the AI "how to do 1a" steps, including your edits
+    "defense",         # saved committee profiles and selections
+    "defense-history", # past practice runs and their debriefs
+    "skills",          # which actions are enabled, plus custom ones
+    "activity",        # the streak/heatmap event log
+    "prefs",           # display density, model choice, home layout
+    "cadence",         # meeting cadence reminder setting
 }
 MAX_SECTION_BYTES = 2_000_000  # ~2MB per section (audio notes are data URLs)
 

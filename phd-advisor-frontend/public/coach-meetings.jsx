@@ -139,7 +139,7 @@ function CoachMeetings({ onToast }) {
 
       {sorted.length === 0 && (
         <button className="doc-dropzone" onClick={() => setEditing("new")}>
-          <span className="doc-dz-ico"><IcoM name="Mic" size={22} /></span>
+          <span className="doc-dz-ico"><IcoM name="CalendarPlus" size={22} /></span>
           <span className="doc-dz-t">Log your first meeting</span>
           <span className="doc-dz-d">Create an agenda, record the meeting (or upload audio), and the AI turns it into a transcript, summary, and action items that flow into your plan.</span>
         </button>

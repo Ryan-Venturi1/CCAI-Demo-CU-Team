@@ -140,7 +140,7 @@
   // their tour on first visit but keep no button afterwards — they're the screens
   // people live in, and a permanent FAB there competes with real content (My Plan
   // already has "Something came up?" anchored bottom-right).
-  const FAB_PAGES = new Set(["meetings", "insights", "defense", "documents", "wellness"]);
+  const FAB_PAGES = new Set(["meetings", "insights", "defense", "documents"]);   // wellness parked for beta
 
   function PageTour({ page }) {
     const steps = PAGE_TOURS[page] || null;

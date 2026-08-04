@@ -10,7 +10,47 @@ const IconT = window.Icon;
 
 // localStorage helpers ------------------------------------------------------
 const loadLS = (k, d) => { try { const r = localStorage.getItem(k); return r != null ? JSON.parse(r) : d; } catch (e) { return d; } };
-const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+// Stores written imperatively rather than through useSyncedStore — the document
+// shelf, the AI walkthroughs, the activity log — still belong to the account.
+// Mapping key -> workspace section here means every existing saveLS() call site
+// syncs without being rewritten, and the same outbox covers them when offline.
+const MIRRORED = {
+  "phd-coach-docs-v1": "docshelf",
+  "phd-plan-walkthrough-v1": "walkthroughs",
+  "phd-coach-activity-v1": "activity",
+  "phd-meeting-cadence-v1": "cadence",
+  "phd-defense-committee-v1": "defense",
+  "phd-defense-history-v1": "defense-history",
+  "phd-coach-skills-enabled-v1": "skills",
+  "phd-coach-prefs-v1": "prefs"
+};
+const saveLS = (k, v) => {
+  try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {}
+  const section = MIRRORED[k];
+  // Debounced per key: these are written on every keystroke in some tools.
+  if (section && typeof pushSection === "function") {
+    saveLS._t = saveLS._t || {};
+    clearTimeout(saveLS._t[k]);
+    saveLS._t[k] = setTimeout(() => pushSection(section, v), 900);
+  }
+};
+
+// Pull the account's copy of the mirrored keys over the device's. Called once at
+// boot, before the pages that read them render.
+async function hydrateMirrored() {
+  const state = await fetchWorkspaceOnce();
+  if (!state) return;                    // unreachable: the device copy stands
+  const out = readOutbox();
+  Object.keys(MIRRORED).forEach(k => {
+    const section = MIRRORED[k];
+    if (out[section] !== undefined) return;   // local edits pending: don't clobber
+    const server = (state.sections || {})[section];
+    if (isEmptyValue(server)) return;
+    try { localStorage.setItem(k, JSON.stringify(server)); } catch (e) {}
+  });
+}
+window.hydrateMirrored = hydrateMirrored;
+window.MIRRORED_KEYS = MIRRORED;
 const uid = (p) => p + Math.random().toString(36).slice(2, 8);
 
 // One-time merge (2026-07): Writing Scratchpad notes fold into Journal & Drafts.
@@ -26,52 +66,142 @@ const uid = (p) => p + Math.random().toString(36).slice(2, 8);
 
 // Backend workspace hydration (one fetch per page load, shared by all tools) -
 let __wsPromise = null;
+let __wsAccount = null;
+
+// Whose workspace this cached promise belongs to. localStorage is namespaced per
+// account precisely so one person never sees another's data — but this cache is
+// in memory and signing out does NOT reload the page, so without keying it by
+// account, signing in as someone else would hydrate THEIR storage from the
+// PREVIOUS person's workspace. Keying it here means a different account simply
+// misses the cache, rather than relying on someone remembering to reset it.
+function currentAccountKey() {
+  try {
+    const u = (window.CoachAPI && window.CoachAPI.getRawUser && window.CoachAPI.getRawUser()) || null;
+    const id = u && (u.id || u._id || u.email);
+    return id ? String(id).toLowerCase() : "";
+  } catch (e) { return ""; }
+}
+
 function fetchWorkspaceOnce() {
   const api = window.CoachAPI;
   if (!api || !api.isAuthed || !api.isAuthed()) return Promise.resolve(null);
-  if (!__wsPromise) __wsPromise = api.getWorkspaceState().catch(() => null);
+  const who = currentAccountKey();
+  if (!__wsPromise || __wsAccount !== who) {
+    __wsAccount = who;
+    __wsPromise = api.getWorkspaceState().catch(() => null);
+  }
   return __wsPromise;
 }
 
-/* useSyncedStore — localStorage-first state that hydrates from the backend on
-   mount (server wins only when local is empty) and pushes changes back with a
-   debounce. `section` is the backend workspace section name; pass null to keep
-   a tool local-only. */
+// Signing out drops the cache outright, so nothing survives into the next session.
+window.resetWorkspaceCache = () => { __wsPromise = null; __wsAccount = null; };
+
+/* ---------------------------------------------------------------------------
+   useSyncedStore — the account is the source of truth; the device is a cache.
+
+   This used to be the other way round: localStorage held the real copy, the
+   server was a best-effort backup, and the server only won if local happened to
+   be empty. Three things were wrong with that. A second device kept its own
+   stale copy forever. Only arrays could hydrate, so object-shaped stores (the
+   document shelf, the plan) never restored at all. And a push that failed was
+   swallowed — anything written while the API was unreachable never arrived.
+
+   Now:
+     · on mount the server value wins and is mirrored into localStorage;
+     · every write goes to localStorage first (so nothing is ever lost) and
+       then to the server;
+     · a failed push lands in an outbox retried on the next load and whenever a
+       later push succeeds, so offline edits catch up by themselves.
+
+   `section` is the backend workspace section; pass null to stay device-only
+   (genuinely device-scoped things, like which tour you've already seen).
+   --------------------------------------------------------------------------- */
+const OUTBOX_KEY = "phd-sync-outbox-v1";
+const readOutbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "{}"); } catch (e) { return {}; } };
+const writeOutbox = (o) => { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(o)); } catch (e) {} };
+
+const canSync = () => {
+  const api = window.CoachAPI;
+  return !!(api && api.isAuthed && api.isAuthed()
+            && (!api.token || api.token() !== "demo-token")
+            && api.putWorkspaceSection);
+};
+
+// Push one section. On failure the value is parked so it can be retried later.
+async function pushSection(section, value) {
+  if (!canSync()) return false;
+  try {
+    await window.CoachAPI.putWorkspaceSection(section, value);
+    const out = readOutbox();
+    if (out[section] !== undefined) { delete out[section]; writeOutbox(out); }
+    return true;
+  } catch (e) {
+    const out = readOutbox();
+    out[section] = value;
+    writeOutbox(out);
+    return false;
+  }
+}
+
+// Anything stranded by an earlier outage goes up as soon as we can talk again.
+let __outboxFlushing = false;
+async function flushOutbox() {
+  if (__outboxFlushing || !canSync()) return;
+  const out = readOutbox();
+  const sections = Object.keys(out);
+  if (!sections.length) return;
+  __outboxFlushing = true;
+  try {
+    for (const section of sections) await pushSection(section, out[section]);
+  } finally { __outboxFlushing = false; }
+}
+window.flushSyncOutbox = flushOutbox;
+
+const isEmptyValue = (v) =>
+  v === null || v === undefined ||
+  (Array.isArray(v) && v.length === 0) ||
+  (typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
+
 function useSyncedStore(key, initial, section) {
   const [val, setVal] = useStateT(() => loadLS(key, initial));
-  const dirty = useRefT(false);
+  const pending = useRefT(false);   // this device has edits the server hasn't seen
   const first = useRefT(true);
 
+  // ---- hydrate: the server wins ---------------------------------------------
   useEffectT(() => {
     if (!section) return;
     let alive = true;
     fetchWorkspaceOnce().then(state => {
-      if (!alive || !state || dirty.current) return;
+      if (!alive || !state) return;                 // unreachable: keep the local copy
+      // A local edit made before the fetch landed is newer than what we asked
+      // for — don't let a stale server read overwrite something just typed.
+      if (pending.current || readOutbox()[section] !== undefined) return;
       const server = (state.sections || {})[section];
-      const local = loadLS(key, null);
-      if (Array.isArray(server) && server.length && (!local || (Array.isArray(local) && !local.length))) {
-        setVal(server);
-      }
+      if (isEmptyValue(server)) return;             // nothing on the account yet
+      setVal(server);
+      saveLS(key, server);
     });
+    flushOutbox();
     return () => { alive = false; };
   }, [key, section]);
 
+  // ---- write: local first, then the account ---------------------------------
   useEffectT(() => {
     saveLS(key, val);
     if (first.current) { first.current = false; return; }
     if (!section) return;
-    dirty.current = true;
-    const t = setTimeout(() => {
-      const api = window.CoachAPI;
-      if (api && api.isAuthed && api.isAuthed()) {
-        api.putWorkspaceSection(section, val).catch(() => {});
-      }
+    pending.current = true;
+    const t = setTimeout(async () => {
+      const ok = await pushSection(section, val);
+      if (ok) { pending.current = false; flushOutbox(); }
     }, 900);
     return () => clearTimeout(t);
   }, [key, val, section]);
 
   return [val, setVal];
 }
+
+
 // Back-compat alias for anything else using the old name.
 function useStored(key, initial) { return useSyncedStore(key, initial, null); }
 

@@ -797,6 +797,64 @@
     const [mode, setMode] = useState("present");        // qa | present
     const [format, setFormat] = useState("defense");
     const [materials, setMaterials] = useState([]);     // {name, size, supporting}
+    // Pick straight off the Documents shelf. Most of what you'd practise against
+    // is already there — the draft you uploaded, the outline an Action produced —
+    // and re-uploading a copy you already gave us is busywork.
+    const [shelfOpen, setShelfOpen] = useState(false);
+    const [shelfDocs, setShelfDocs] = useState([]);
+    const [shelfBusy, setShelfBusy] = useState(false);
+
+    // The shelf is two sources: documents saved in this browser (Action output,
+    // meeting records) and documents on your account. Both are listed together;
+    // the account ones fetch their text only when you actually pick one.
+    const openShelf = async () => {
+      setShelfOpen(true);
+      setShelfBusy(true);
+      const out = [];
+      try {
+        const store = JSON.parse(localStorage.getItem("phd-coach-docs-v1") || "{}");
+        Object.values(store.projects || {}).forEach(d => {
+          if (d && d.name) out.push({ id: "local:" + d.id, name: d.name, source: d.source || "This device",
+                                      words: (d.content || "").split(/\s+/).filter(Boolean).length, local: true, content: d.content || "" });
+        });
+      } catch (e) {}
+      try {
+        if (window.CoachAPI && window.CoachAPI.isAuthed && window.CoachAPI.isAuthed()) {
+          const r = await window.CoachAPI.listLibraryDocs();
+          (r && r.documents || []).forEach(d => out.push({
+            id: "server:" + d.id, name: d.name, source: d.source || "Your account",
+            words: d.word_count || 0, local: false
+          }));
+        }
+      } catch (e) {}
+      // Newest-looking first, and never offer the same name twice.
+      const seen = new Set();
+      setShelfDocs(out.filter(d => (seen.has(d.name) ? false : seen.add(d.name))));
+      setShelfBusy(false);
+    };
+
+    const addFromShelf = async (doc, supporting) => {
+      setShelfBusy(true);
+      let text = doc.content || "";
+      if (!doc.local) {
+        try {
+          const full = await window.CoachAPI.getLibraryDoc(doc.id.replace(/^server:/, ""));
+          text = (full && (full.content || full.text)) || "";
+        } catch (e) {}
+      }
+      setShelfBusy(false);
+      if (!text.trim()) { onToast && onToast("That document has no readable text yet — open it on the Documents page to check."); return; }
+      const entry = {
+        id: `shelf-${doc.id}-${Date.now()}`,
+        name: doc.name, size: text.length, text,
+        status: "parsed-local",
+        wordCount: text.split(/\s+/).filter(Boolean).length,
+        fileType: "text", supporting: !!supporting, fileUrl: "", fromShelf: true
+      };
+      if (!supporting && !deck) setDeck({ ...entry, kind: "text", status: "parsed" });
+      else setMaterials(p => [...p, entry]);
+      setShelfOpen(false);
+    };
     const [voice, setVoice] = useState(false);
     const [realMembers, setRealMembers] = useState(loadReal);   // {id, name, institution}
     const [selectedProfileIds, setSelectedProfileIds] = useState(() => {
@@ -2123,7 +2181,47 @@
               </div>
               <button className="btn" onClick={() => supportingFileRef.current?.click()}><IcoD name="Paperclip" size={14} /> Upload supporting materials</button>
             </div>
+            <div className="def-upload-box">
+              <span className="def-upload-icon"><IcoD name="FolderOpen" size={20} /></span>
+              <div className="def-upload-copy">
+                <strong>From your Documents</strong>
+                <span>Use something already on your shelf — a draft you uploaded, or a document an Action wrote.</span>
+              </div>
+              <button className="btn" onClick={openShelf}><IcoD name="FileText" size={14} /> Choose from Documents</button>
+            </div>
           </div>
+
+          {shelfOpen && (
+            <div className="backdrop" onClick={() => setShelfOpen(false)}>
+              <div className="modal" style={{ maxWidth: 620 }} role="dialog" aria-modal="true"
+                aria-label="Choose from Documents" onClick={e => e.stopPropagation()}>
+                <div className="modal-h">
+                  <div>
+                    <h2 className="display">Choose from Documents</h2>
+                    <p>Anything on your shelf can be practised against — no need to upload it twice.</p>
+                  </div>
+                  <button className="modal-x" onClick={() => setShelfOpen(false)} aria-label="Close"><IcoD name="X" size={14} /></button>
+                </div>
+                <div className="modal-b">
+                  {shelfBusy && <div className="tool-empty"><IcoD name="Loader" size={14} className="spin" /> Reading your shelf…</div>}
+                  {!shelfBusy && shelfDocs.length === 0 && (
+                    <div className="tool-empty">Nothing on your shelf yet — upload a document on the Documents page and it'll appear here.</div>
+                  )}
+                  {!shelfBusy && shelfDocs.map(d => (
+                    <div key={d.id} className="def-shelf-row">
+                      <span className="def-shelf-i"><IcoD name="FileText" size={15} /></span>
+                      <span className="def-shelf-t">
+                        <b>{d.name}</b>
+                        <em>{d.source}{d.words ? ` · ${d.words.toLocaleString()} words` : ""}</em>
+                      </span>
+                      <button className="btn sm" onClick={() => addFromShelf(d, false)}>Use as main</button>
+                      <button className="btn sm ghost" onClick={() => addFromShelf(d, true)}>Supporting</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="def-materials">
             {deck && (

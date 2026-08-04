@@ -70,6 +70,9 @@ async def create_indexes():
         await db.database.users.create_index("created_at")
         
         # Indexes for chat_sessions collection
+        # Dedup lookup is by (user_id, content_hash) on every upload, so it needs
+        # an index — without one this is a full scan of the user's shelf.
+        await db.database.user_documents.create_index([("user_id", 1), ("content_hash", 1)])
         await db.database.chat_sessions.create_index("user_id")
         await db.database.chat_sessions.create_index("created_at")
         await db.database.chat_sessions.create_index([("user_id", 1), ("created_at", -1)])
