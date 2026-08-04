@@ -96,6 +96,26 @@ function fetchWorkspaceOnce() {
 // Signing out drops the cache outright, so nothing survives into the next session.
 window.resetWorkspaceCache = () => { __wsPromise = null; __wsAccount = null; };
 
+// Workspace state is fetched ONCE per page load, which means a tab left open on
+// one device never learns about edits made on another. Re-reading on every
+// render would hammer the API for no benefit; re-reading when you come back to
+// the tab is the moment that actually matters. Throttled so alt-tabbing does not
+// turn into a request per switch.
+let __wsLastPull = 0;
+const WS_REFRESH_MIN_MS = 30000;
+async function refreshWorkspace(force) {
+  if (!canSync()) return;
+  if (!force && Date.now() - __wsLastPull < WS_REFRESH_MIN_MS) return;
+  __wsLastPull = Date.now();
+  __wsPromise = null;                       // force a real fetch, keep the account key
+  const state = await fetchWorkspaceOnce();
+  if (!state) return;                       // unreachable: leave what we have
+  await hydrateMirrored();
+  // Hook-backed stores re-hydrate themselves rather than being reached into.
+  try { window.dispatchEvent(new CustomEvent("phd-workspace-refreshed")); } catch (e) {}
+}
+window.refreshWorkspace = refreshWorkspace;
+
 /* ---------------------------------------------------------------------------
    useSyncedStore — the account is the source of truth; the device is a cache.
 
@@ -171,7 +191,7 @@ function useSyncedStore(key, initial, section) {
   useEffectT(() => {
     if (!section) return;
     let alive = true;
-    fetchWorkspaceOnce().then(state => {
+    const pull = () => fetchWorkspaceOnce().then(state => {
       if (!alive || !state) return;                 // unreachable: keep the local copy
       // A local edit made before the fetch landed is newer than what we asked
       // for — don't let a stale server read overwrite something just typed.
@@ -181,8 +201,12 @@ function useSyncedStore(key, initial, section) {
       setVal(server);
       saveLS(key, server);
     });
+    pull();
     flushOutbox();
-    return () => { alive = false; };
+    // Another device may have moved on while this tab sat idle.
+    const onRefresh = () => pull();
+    window.addEventListener("phd-workspace-refreshed", onRefresh);
+    return () => { alive = false; window.removeEventListener("phd-workspace-refreshed", onRefresh); };
   }, [key, section]);
 
   // ---- write: local first, then the account ---------------------------------

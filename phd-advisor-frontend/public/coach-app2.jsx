@@ -1733,7 +1733,12 @@ function CoachRoot() {
 
   // Anything stranded by an outage goes up the moment the tab is active again.
   useE2(() => {
-    const retry = () => { if (window.flushSyncOutbox) window.flushSyncOutbox(); };
+    const retry = () => {
+      // Push anything stranded, then pull whatever another device changed while
+      // this tab was in the background.
+      if (window.flushSyncOutbox) window.flushSyncOutbox();
+      if (window.refreshWorkspace) window.refreshWorkspace();
+    };
     window.addEventListener("online", retry);
     window.addEventListener("focus", retry);
     return () => { window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
