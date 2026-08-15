@@ -3303,3 +3303,22 @@ button, input, textarea, select { font-family: inherit; }
 .plan-doclink-t { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; }
 .plan-doclink-t b { font-size: 13.5px; }
 .plan-doclink-t em { font-style: normal; font-size: 12px; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
+
+/* ============================================================================
+   DEFENSE ROOM SETUP — tiered: essentials card + customize accordions
+   ========================================================================== */
+.def-ess { display: flex; flex-direction: column; gap: 18px; }
+.def-ess-row { display: flex; flex-direction: column; gap: 8px; }
+.def-ess-l { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.def-ess-select { max-width: 460px; border: 1px solid var(--border-input); border-radius: 11px; padding: 10px 12px; font-size: 14px; font-family: inherit; background: var(--surface); color: var(--text); cursor: pointer; }
+.def-ess-select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); }
+.def-ess-hint { font-size: 12px; color: var(--text-3); }
+.def-ess-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.def-acc { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 10px; overflow: hidden; }
+.def-acc-h { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 16px; background: none; border: none; cursor: pointer; text-align: left; font-family: inherit; }
+.def-acc-h:hover { background: var(--surface-2); }
+.def-acc-i { width: 28px; height: 28px; border-radius: 9px; background: var(--primary-soft); color: var(--primary-deep); display: grid; place-items: center; flex-shrink: 0; }
+.def-acc-t { font-size: 13.5px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.def-acc-sum { margin-left: auto; font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.def-acc.open .def-acc-sum { display: none; }
+.def-acc-b { padding: 4px 16px 16px; border-top: 1px solid var(--border); padding-top: 14px; }

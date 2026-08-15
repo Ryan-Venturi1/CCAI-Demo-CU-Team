@@ -856,6 +856,7 @@
       setShelfOpen(false);
     };
     const [voice, setVoice] = useState(false);
+    const [setupOpen, setSetupOpen] = useState(() => new Set()); // customize accordions
     const [realMembers, setRealMembers] = useState(loadReal);   // {id, name, institution}
     const [selectedProfileIds, setSelectedProfileIds] = useState(() => {
       const available = loadReal().map(member => member.id);
@@ -2116,47 +2117,61 @@
       const isPresent = mode === "present";
       const hasRequiredMaterials = !!deck || materials.some(m =>
         !m.supporting && (m.status === "parsed" || m.status === "parsed-local"));
+
+      // Tier 1 collapses mode × format into one plain-language choice.
+      const practiceType = `${format}:${mode}`;
+      const setPracticeType = (v) => { const [f, m] = v.split(":"); chooseFormat(f); setMode(m); };
+      const PRACTICE_OPTIONS = [
+        ["defense:qa", "Dissertation defense — committee Q&A"],
+        ["defense:present", "Dissertation defense — present, then defend"],
+        ["talk:present", "Conference talk — present + audience Q&A"],
+        ["talk:qa", "Conference talk — questions only"],
+        ["poster:present", "Poster session — present + questions"],
+        ["poster:qa", "Poster session — questions only"],
+      ];
+
+      // Accordion header summaries — defaults stay visible without opening.
+      const recLabel = captureMode === "none" ? "no recording" : captureMode === "audio" ? "audio" : "camera + mic";
+      const panelSummary = format === "defense"
+        ? (selectedProfileIds.length
+          ? `AI committee + ${selectedProfileIds.length} public profile${selectedProfileIds.length === 1 ? "" : "s"}`
+          : "AI committee (automatic)")
+        : `${audienceLevels.length} audience level${audienceLevels.length === 1 ? "" : "s"}${selectedProfileIds.length ? ` + ${selectedProfileIds.length} profile${selectedProfileIds.length === 1 ? "" : "s"}` : ""}`;
+      const sessionSummary = `${followUpQuestionCount} question${followUpQuestionCount === 1 ? "" : "s"} · ${difficulty}${isPresent ? ` · ${targetPresentationMinutes} min · ${recLabel}` : ""}`;
+      const focusSummary = focusAreas.trim()
+        ? `“${focusAreas.trim().slice(0, 38)}${focusAreas.trim().length > 38 ? "…" : ""}”`
+        : format === "defense"
+          ? `${defensePriorities.length} of ${DEFENSE_PRIORITIES.length} priorities (balanced)`
+          : `${audienceInterests.length} interest${audienceInterests.length === 1 ? "" : "s"}`;
+
+      const acc = (id, icon, title, summary, ptour, body) => {
+        const open = setupOpen.has(id);
+        return (
+          <div className={`def-acc ${open ? "open" : ""}`} data-ptour={ptour}>
+            <button type="button" className="def-acc-h" aria-expanded={open}
+              onClick={() => setSetupOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; })}>
+              <span className="def-acc-i"><IcoD name={icon} size={14} /></span>
+              <span className="def-acc-t">{title} <span className="def-optional">optional</span></span>
+              <span className="def-acc-sum">{summary}</span>
+              <IcoD name={open ? "ChevronUp" : "ChevronDown"} size={15} />
+            </button>
+            {open && <div className="def-acc-b">{body}</div>}
+          </div>
+        );
+      };
+
       return (
         <div className="page">
           <div className="def-head">
             <div className="greeting" style={{ margin: 0 }}>
               <h1 className="display" style={{ fontSize: 26 }}>Defense Room</h1>
-              <div className="sub">Rehearse a defense, poster, or research talk and receive questions grounded in your materials and, in presentation mode, what you presented.</div>
+              <div className="sub">Rehearse a defense, poster, or research talk. Pick what you're practicing, add your material, and go — everything else has good defaults.</div>
             </div>
             <button className="btn" onClick={() => setStage("history")}>
               <IcoD name="Archive" size={14} /> History{history.length ? ` · ${history.length}` : ""}
             </button>
           </div>
 
-          {/* 1 · Choose whether this run includes a presentation. */}
-          <div className="section-label"><span className="ic"><IcoD name="Route" size={13} /></span> 1 · How do you want to practice?</div>
-          <div className="def-modes" data-ptour="def-mode">
-            <button type="button" className={`def-mode-card ${mode === "present" ? "sel" : ""}`} onClick={() => setMode("present")}>
-              <span className="dmc-ico"><IcoD name="Presentation" size={19} /></span>
-              <span className="dmc-t">Present, then answer questions</span>
-              <span className="dmc-d">Rehearse your presentation first, then answer questions grounded in what you presented and uploaded.</span>
-            </button>
-            <button type="button" className={`def-mode-card ${mode === "qa" ? "sel" : ""}`} onClick={() => setMode("qa")}>
-              <span className="dmc-ico"><IcoD name="MessagesSquare" size={19} /></span>
-              <span className="dmc-t">Practice questions only</span>
-              <span className="dmc-d">Skip the presentation and answer questions grounded in your uploaded materials.</span>
-            </button>
-          </div>
-
-          {/* 2 · Choose the practice format so the room has context. */}
-          <div className="section-label"><span className="ic"><IcoD name="ListChecks" size={13} /></span> 2 · What are you practicing?</div>
-          <div className="def-formats">
-            {FORMATS.map(f => (
-              <button key={f.id} className={`onb-choice-card ${format === f.id ? "sel" : ""}`} onClick={() => chooseFormat(f.id)}>
-                <span className="occ-ico"><IcoD name={f.icon} size={18} /></span>
-                <span className="occ-t">{f.name}</span>
-                <span className="occ-d">{f.desc}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* 3 · Primary materials are required; supporting context is optional. */}
-          <div className="section-label"><span className="ic"><IcoD name="Upload" size={13} /></span> 3 · Upload your materials</div>
           <input ref={fileRef} type="file" multiple style={{ display: "none" }} accept=".pdf,.ppt,.pptx,.key,.doc,.docx,.txt,.md"
             onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
           <input ref={supportingFileRef} type="file" multiple style={{ display: "none" }} accept=".pdf,.ppt,.pptx,.key,.doc,.docx,.txt,.md"
@@ -2164,32 +2179,240 @@
           <input ref={deckRef} type="file" style={{ display: "none" }} accept=".pdf,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation"
             onChange={e => { addDeck(e.target.files); e.target.value = ""; }} />
 
-          <div className="def-upload-grid" data-ptour="def-materials">
-            <div className="def-upload-box">
-              <span className="def-upload-icon"><IcoD name="Presentation" size={20} /></span>
-              <div className="def-upload-copy">
-                <strong>Primary material <span className="def-required">required</span></strong>
-                <span>Your slide deck, dissertation draft, paper, or poster.</span>
-              </div>
-              <button className="btn" onClick={() => fileRef.current?.click()}><IcoD name="Upload" size={14} /> Upload primary material</button>
+          {/* ================= Tier 1 — the whole base flow in one card ====== */}
+          <div className="card card-pad def-ess">
+            <div className="def-ess-row" data-ptour="def-mode">
+              <label className="def-ess-l" htmlFor="def-practice-type">What are you practicing? <span className="def-required">required</span></label>
+              <select id="def-practice-type" className="def-ess-select" value={practiceType} onChange={e => setPracticeType(e.target.value)}>
+                {PRACTICE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+              <span className="def-ess-hint">{isPresent
+                ? "You'll rehearse first, then answer questions grounded in what you presented and uploaded."
+                : "Straight to questions grounded in your uploaded material."}</span>
             </div>
-            <div className="def-upload-box supporting">
-              <span className="def-upload-icon"><IcoD name="Files" size={20} /></span>
-              <div className="def-upload-copy">
-                <strong>Supporting materials <span className="def-optional">optional</span></strong>
-                <span>Add notes, references, appendices, or related papers for richer questions.</span>
+
+            <div className="def-ess-row" data-ptour="def-materials">
+              <label className="def-ess-l">Your material <span className="def-required">required</span></label>
+              <div className="def-ess-actions">
+                <button className="btn primary" onClick={() => fileRef.current?.click()}><IcoD name="Upload" size={14} color="#fff" /> Upload {isPresent ? "your deck or draft" : "your draft or paper"}</button>
+                <button className="btn" onClick={openShelf}><IcoD name="FolderOpen" size={14} /> From your Documents</button>
+                <button className="btn ghost" onClick={() => supportingFileRef.current?.click()}><IcoD name="Paperclip" size={14} /> Add supporting <span className="def-optional">optional</span></button>
               </div>
-              <button className="btn" onClick={() => supportingFileRef.current?.click()}><IcoD name="Paperclip" size={14} /> Upload supporting materials</button>
-            </div>
-            <div className="def-upload-box">
-              <span className="def-upload-icon"><IcoD name="FolderOpen" size={20} /></span>
-              <div className="def-upload-copy">
-                <strong>From your Documents</strong>
-                <span>Use something already on your shelf — a draft you uploaded, or a document an Action wrote.</span>
+
+              <div className="def-materials" style={{ marginTop: (deck || materials.length) ? 10 : 0 }}>
+                {deck && (
+                  <span className="def-mat">
+                    <IcoD name={deck.status === "failed" ? "AlertTriangle" : deck.status === "parsing" ? "Loader2" : deck.kind === "pdf" ? "FileText" : "Presentation"} size={12} />
+                    <span className="def-mat-role role-main">Main</span> {deck.name}
+                    {deck.status === "parsing" && " - parsing"}
+                    {deck.status === "parsed" && deck.parsedSlides?.length ? ` - ${deck.parsedSlides.length} slides` : ""}
+                    {deck.status === "failed" && " - unreadable"}
+                    <button className="def-mat-x" onClick={() => setDeck(null)} title="Remove"><IcoD name="X" size={11} /></button>
+                  </span>
+                )}
+                {materials.map(m => (
+                  <span key={m.id} className={`def-mat ${m.supporting ? "supporting" : ""} ${m.status === "failed" ? "bad" : ""}`}>
+                    <IcoD name={m.status === "failed" ? "AlertTriangle" : m.status === "parsing" ? "Loader2" : m.supporting ? "Paperclip" : "FileText"} size={12} />
+                    <span className={`def-mat-role ${m.supporting ? "role-supporting" : "role-main"}`}>{m.supporting ? "Supporting" : "Main"}</span> {m.name}
+                    {m.status === "parsing" && " · reading…"}
+                    {(m.status === "parsed" || m.status === "parsed-local") && ` · ${m.wordCount || 0} words`}
+                    {m.status === "failed" && " · couldn't read"}
+                    <button className="def-mat-x" onClick={() => setMaterials(p => p.filter(item => item.id !== m.id))} title="Remove" aria-label={`Remove ${m.name}`}><IcoD name="X" size={11} /></button>
+                  </span>
+                ))}
               </div>
-              <button className="btn" onClick={openShelf}><IcoD name="FileText" size={14} /> Choose from Documents</button>
+              {materials.filter(m => m.status === "failed").map(m => (
+                <div key={m.id} className="def-gap" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <IcoD name="AlertTriangle" size={14} />
+                  <span><strong>{m.name}</strong> — {m.error || "We couldn't read that file."}</span>
+                </div>
+              ))}
+              {deck && (
+                <div className="def-slidecount">
+                  <label><IcoD name="Layers" size={13} /> Slides in your deck</label>
+                  <input type="number" min="1" max="60" value={slideCount}
+                    onChange={e => setSlideCount(Math.max(1, Math.min(60, parseInt(e.target.value || "1", 10))))}
+                    disabled={deck?.kind === "pptx" && deck?.parsedSlides?.length} />
+                  <span className="def-note" style={{ margin: 0 }}><IcoD name="Info" size={12} /> PowerPoint decks use the parsed slide count; PDFs use this page count.</span>
+                </div>
+              )}
             </div>
+
+            <div className="def-startrow" data-ptour="def-start" style={{ marginTop: 6 }}>
+              <button className={`composer-btn ${voice ? "on" : ""}`} onClick={() => setVoice(v => !v)} title="Questions are read aloud">
+                <IcoD name={voice ? "Volume2" : "VolumeX"} size={14} /> Read aloud: {voice ? "On" : "Off"}
+              </button>
+              <button className="btn primary lg" onClick={isPresent ? startPresent : start}
+                disabled={!hasRequiredQuestioners || !hasRequiredMaterials || deckParsing || parsingMaterials || deck?.status === "failed" || loadingQuestions}>
+                <IcoD name={(deckParsing || parsingMaterials) ? "Loader2" : "Play"} size={15} color="#fff" />
+                {(deckParsing || parsingMaterials)
+                  ? "Reading materials..."
+                  : !hasRequiredMaterials
+                    ? "Add your material to start"
+                    : isPresent
+                      ? `Practice ${fmt.name.toLowerCase()}${deck ? ` - ${slideCount} slide${slideCount === 1 ? "" : "s"}` : ""}`
+                      : `Start ${followUpQuestionCount} practice question${followUpQuestionCount === 1 ? "" : "s"}`}
+              </button>
+            </div>
+            {!hasRequiredQuestioners && <div className="def-note" style={{ marginTop: 8 }}><IcoD name="AlertTriangle" size={12} /> Re-select at least one audience level (in Customize → Your audience) to generate questions.</div>}
           </div>
+
+          {/* ================= Tier 2 — everything else, collapsed =========== */}
+          <div className="section-label" style={{ marginTop: 18 }}><span className="ic"><IcoD name="Settings2" size={13} /></span> Customize <span className="def-optional">optional — good defaults are already set</span></div>
+
+          {acc("panel", "Users", format === "defense" ? "Your committee" : "Your audience", panelSummary, "def-committee", (
+            <>
+              {format !== "defense" && (
+                <>
+                  <div className="def-add-real-h"><IcoD name="UserRound" size={13} /> Who's in the room?</div>
+                  <div className="def-formats">
+                    {AUDIENCE_LEVELS.map(level => (
+                      <button key={level.id} type="button"
+                        className={`onb-choice-card ${audienceLevels.includes(level.id) ? "sel" : ""}`}
+                        onClick={() => toggleAudienceLevel(level.id)}>
+                        <span className="occ-ico"><IcoD name="UserRound" size={18} /></span>
+                        <span className="occ-t">{level.name}</span>
+                        <span className="occ-d">{level.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {format === "defense" && (
+                <div className="def-note" style={{ marginBottom: 10 }}><IcoD name="Users" size={12} /> An AI committee questions you automatically. Add public academic profiles below to steer questions toward their documented research areas.</div>
+              )}
+
+              <div className="def-add-real-h" style={{ marginTop: 8 }}><IcoD name="Globe" size={13} /> Public profiles to inform questions <span className="def-optional">up to {MAX_COMMITTEE_SIZE}</span></div>
+              <div className="def-note" style={{ marginBottom: 10 }}><IcoD name="Info" size={12} /> Profiles emphasize topics from an academic's documented work. They never predict or imitate the real person.</div>
+              {roster.length > 0 && (
+                <div className="def-panel">
+                  {roster.map(a => {
+                    const selected = selectedProfileIds.includes(a.id);
+                    const selectionFull = !selected && selectedProfileIds.length >= MAX_COMMITTEE_SIZE;
+                    return (
+                    <div key={a.id} className={`def-chip def-profile-chip ${selected ? "on" : ""} ${selectionFull ? "selection-full" : ""}`}
+                      style={selected ? { borderColor: a.color } : undefined}>
+                      <input type="checkbox" className="def-profile-check" checked={selected}
+                        onChange={() => toggleProfileSelection(a.id)}
+                        aria-label={`${selected ? "Deselect" : "Select"} ${a.name} for the Defense Room`} />
+                      <button type="button" className="def-profile-link"
+                        title={`Open ${a.name}'s public academic profile`}
+                        onClick={() => openSavedProfile(realMembers.find(m => m.id === a.id))}>
+                        <span className="def-chip-txt">
+                          <span className="def-profile-name">{a.name}</span>
+                          {a.role !== "Committee member" && <span className="def-chip-sub">{a.role}</span>}
+                        </span>
+                      </button>
+                      <button type="button" className="def-mat-x" title="Remove academic profile" aria-label={`Remove ${a.name}`}
+                        onClick={() => removeRealMember(a.id)}>
+                        <IcoD name="X" size={11} />
+                      </button>
+                    </div>
+                  );})}
+                </div>
+              )}
+              {roster.length > 0 && (
+                <div className="def-profile-count">
+                  <IcoD name="CheckSquare2" size={12} /> {selectedProfileIds.length} of {MAX_COMMITTEE_SIZE} selected · {realMembers.length} saved profile{realMembers.length === 1 ? "" : "s"}
+                </div>
+              )}
+              <div className="def-add-row" style={{ marginTop: 8 }}>
+                <input className="def-add-input" value={newName} onChange={e => setNewName(e.target.value)}
+                  aria-label="Academic name"
+                  placeholder="Name, e.g. Dr. Maria Chen" onKeyDown={e => e.key === "Enter" && !resolvingMember && searchRealMember()} />
+                <input className="def-add-input" value={newInstitution} onChange={e => setNewInstitution(e.target.value)}
+                  aria-label="Affiliated institution"
+                  placeholder="Institution, e.g. University of Colorado Boulder" onKeyDown={e => e.key === "Enter" && !resolvingMember && searchRealMember()} />
+                <button className="btn sm" onClick={searchRealMember} disabled={!newName.trim() || resolvingMember}>
+                  <IcoD name={resolvingMember ? "Loader2" : "Search"} size={13} /> {resolvingMember ? "Searching…" : "Search"}
+                </button>
+              </div>
+            </>
+          ))}
+
+          {acc("session", "SlidersHorizontal", "Session settings", sessionSummary, null, (
+            <div className="def-room-settings" style={{ margin: 0 }}>
+              <div className="def-room-field">
+                <label htmlFor="def-question-count">{isPresent ? "Follow-up questions" : "Practice questions"}</label>
+                <input id="def-question-count" type="number" min="1" max="12" value={followUpQuestionCount}
+                  title={isPresent ? "Number of follow-up questions after your presentation" : "Number of practice questions"}
+                  onChange={e => {
+                    questionCountEditedRef.current = true;
+                    setFollowUpQuestionCount(Math.max(1, Math.min(12, parseInt(e.target.value || "1", 10))));
+                  }} />
+              </div>
+              <div className="def-room-field">
+                <label htmlFor="def-difficulty">Difficulty</label>
+                <select id="def-difficulty" value={difficulty} onChange={e => setDifficulty(e.target.value)}>
+                  <option value="supportive">Supportive</option>
+                  <option value="standard">Standard</option>
+                  <option value="rigorous">Rigorous</option>
+                </select>
+              </div>
+              {isPresent && (
+                <div className="def-room-field">
+                  <label htmlFor="def-target-time">Target time</label>
+                  <div className="def-time-control">
+                    <input id="def-target-time" type="number" min="1" max="180" value={targetPresentationMinutes}
+                      onChange={e => {
+                        targetTimeEditedRef.current = true;
+                        setTargetPresentationMinutes(Math.max(1, Math.min(180, parseInt(e.target.value || "1", 10))));
+                      }} />
+                    <span>min</span>
+                  </div>
+                </div>
+              )}
+              {isPresent && (
+                <div className="def-room-field">
+                  <label htmlFor="def-recording">Recording</label>
+                  <select id="def-recording" value={captureMode} onChange={e => setCaptureMode(e.target.value)}>
+                    <option value="none">No recording</option>
+                    <option value="audio">Audio only</option>
+                    <option value="both">Camera + mic</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {acc("focus", "Target", "Focus areas", focusSummary, null, (
+            <>
+              {format === "defense" ? (
+                <>
+                  <div className="def-add-real-h"><IcoD name="Target" size={13} /> What should the committee focus on?</div>
+                  <div className="def-panel def-audience-interests">
+                    {DEFENSE_PRIORITIES.map(priority => (
+                      <button key={priority} type="button"
+                        className={`def-chip ${defensePriorities.includes(priority) ? "on" : ""}`}
+                        onClick={() => toggleDefensePriority(priority)}>
+                        {priority}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="def-note" style={{ marginTop: 8 }}><IcoD name="Info" size={12} /> A balanced set is selected by default. Adjust it to target the areas you most need to rehearse.</div>
+                </>
+              ) : (
+                <>
+                  <div className="def-add-real-h"><IcoD name="Target" size={13} /> What should this audience care about?</div>
+                  <div className="def-panel def-audience-interests">
+                    {(AUDIENCE_INTERESTS[format] || []).map(interest => (
+                      <button key={interest} type="button"
+                        className={`def-chip ${audienceInterests.includes(interest) ? "on" : ""}`}
+                        onClick={() => toggleAudienceInterest(interest)}>
+                        {interest}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              <div className="def-room-field focus" style={{ marginTop: 12 }}>
+                <label htmlFor="def-focus-areas">Anything specific to drill? <span className="def-optional">optional</span></label>
+                <textarea id="def-focus-areas" value={focusAreas} maxLength={1200} rows={3}
+                  onChange={e => setFocusAreas(e.target.value)}
+                  placeholder="Methods, clarity, weak points, questions you are unsure about, or material you may need to cut…" />
+              </div>
+            </>
+          ))}
 
           {shelfOpen && (
             <div className="backdrop" onClick={() => setShelfOpen(false)}>
@@ -2223,201 +2446,6 @@
             </div>
           )}
 
-          <div className="def-materials">
-            {deck && (
-              <span className="def-mat">
-                <IcoD name={deck.status === "failed" ? "AlertTriangle" : deck.status === "parsing" ? "Loader2" : deck.kind === "pdf" ? "FileText" : "Presentation"} size={12} />
-                <span className="def-mat-role role-main">Main</span> {deck.name}
-                {deck.status === "parsing" && " - parsing"}
-                {deck.status === "parsed" && deck.parsedSlides?.length ? ` - ${deck.parsedSlides.length} slides` : ""}
-                {deck.status === "failed" && " - unreadable"}
-                <button className="def-mat-x" onClick={() => setDeck(null)} title="Remove"><IcoD name="X" size={11} /></button>
-              </span>
-            )}
-            {materials.map(m => (
-              <span key={m.id} className={`def-mat ${m.supporting ? "supporting" : ""} ${m.status === "failed" ? "bad" : ""}`}>
-                <IcoD name={m.status === "failed" ? "AlertTriangle" : m.status === "parsing" ? "Loader2" : m.supporting ? "Paperclip" : "FileText"} size={12} />
-                <span className={`def-mat-role ${m.supporting ? "role-supporting" : "role-main"}`}>{m.supporting ? "Supporting" : "Main"}</span> {m.name}
-                {m.status === "parsing" && " · reading…"}
-                {(m.status === "parsed" || m.status === "parsed-local") && ` · ${m.wordCount || 0} words`}
-                {m.status === "failed" && " · couldn't read"}
-                <button className="def-mat-x" onClick={() => setMaterials(p => p.filter(item => item.id !== m.id))} title="Remove" aria-label={`Remove ${m.name}`}><IcoD name="X" size={11} /></button>
-              </span>
-            ))}
-          </div>
-          {materials.filter(m => m.status === "failed").map(m => (
-            <div key={m.id} className="def-gap" style={{ marginTop: 10, marginBottom: 0 }}>
-              <IcoD name="AlertTriangle" size={14} />
-              <span><strong>{m.name}</strong> — {m.error || "We couldn't read that file."}</span>
-            </div>
-          ))}
-          {deck && (
-            <div className="def-slidecount">
-              <label><IcoD name="Layers" size={13} /> Slides in your deck</label>
-              <input type="number" min="1" max="60" value={slideCount}
-                onChange={e => setSlideCount(Math.max(1, Math.min(60, parseInt(e.target.value || "1", 10))))}
-                disabled={deck?.kind === "pptx" && deck?.parsedSlides?.length} />
-              <span className="def-note" style={{ margin: 0 }}><IcoD name="Info" size={12} /> PowerPoint decks use the parsed slide count; PDFs use this page count.</span>
-            </div>
-          )}
-          <div className="def-note"><IcoD name="Info" size={12} /> {isPresent
-            ? "Your primary material is displayed during practice. Supporting materials provide additional context for questions."
-            : "Your primary material anchors the questions. Supporting materials provide additional context."}</div>
-
-          {/* 4 · Configure the room: questioning, timing, focus, and recording. */}
-          <div className="section-label"><span className="ic"><IcoD name="SlidersHorizontal" size={13} /></span> 4 · Practice settings</div>
-          <div className="def-room-settings">
-            <div className="def-room-field">
-              <label htmlFor="def-question-count">{isPresent ? "Follow-up questions" : "Practice questions"}</label>
-              <input id="def-question-count" type="number" min="1" max="12" value={followUpQuestionCount}
-                title={isPresent ? "Number of follow-up questions after your presentation" : "Number of practice questions"}
-                onChange={e => {
-                  questionCountEditedRef.current = true;
-                  setFollowUpQuestionCount(Math.max(1, Math.min(12, parseInt(e.target.value || "1", 10))));
-                }} />
-            </div>
-
-            <div className="def-room-field">
-              <label htmlFor="def-difficulty">Difficulty</label>
-              <select id="def-difficulty" value={difficulty} onChange={e => setDifficulty(e.target.value)}>
-                <option value="supportive">Supportive</option>
-                <option value="standard">Standard</option>
-                <option value="rigorous">Rigorous</option>
-              </select>
-            </div>
-
-            {isPresent && (
-              <div className="def-room-field">
-                <label htmlFor="def-target-time">Target time</label>
-                <div className="def-time-control">
-                  <input id="def-target-time" type="number" min="1" max="180" value={targetPresentationMinutes}
-                    onChange={e => {
-                      targetTimeEditedRef.current = true;
-                      setTargetPresentationMinutes(Math.max(1, Math.min(180, parseInt(e.target.value || "1", 10))));
-                    }} />
-                  <span>min</span>
-                </div>
-              </div>
-            )}
-
-            {isPresent && (
-              <div className="def-room-field">
-                <label htmlFor="def-recording">Recording</label>
-                <select id="def-recording" value={captureMode} onChange={e => setCaptureMode(e.target.value)}>
-                  <option value="none">No recording</option>
-                  <option value="audio">Audio only</option>
-                  <option value="both">Camera + mic</option>
-                </select>
-              </div>
-            )}
-
-            <div className="def-room-field focus">
-              <label htmlFor="def-focus-areas">Areas of focus <span className="def-optional">optional</span></label>
-              <textarea id="def-focus-areas" value={focusAreas} maxLength={1200} rows={3}
-                onChange={e => setFocusAreas(e.target.value)}
-                placeholder="Methods, clarity, weak points, questions you are unsure about, or material you may need to cut…" />
-            </div>
-          </div>
-
-          {format === "defense" && (
-            <>
-              <div className="section-label"><span className="ic"><IcoD name="Target" size={13} /></span> 5 · What should the committee focus on?</div>
-              <div className="def-add-real">
-                <div className="def-panel def-audience-interests">
-                  {DEFENSE_PRIORITIES.map(priority => (
-                    <button key={priority} type="button"
-                      className={`def-chip ${defensePriorities.includes(priority) ? "on" : ""}`}
-                      onClick={() => toggleDefensePriority(priority)}>
-                      {priority}
-                    </button>
-                  ))}
-                </div>
-                <div className="def-note" style={{ marginTop: 8 }}><IcoD name="Info" size={12} /> A balanced set is selected by default. Adjust it to target the areas you most need to rehearse.</div>
-              </div>
-            </>
-          )}
-
-          {format !== "defense" && (
-            <>
-              <div className="section-label"><span className="ic"><IcoD name="Users" size={13} /></span> 5 · Choose your {format === "poster" ? "poster" : "talk"} audience</div>
-              <div className="def-formats">
-                {AUDIENCE_LEVELS.map(level => (
-                  <button key={level.id} type="button"
-                    className={`onb-choice-card ${audienceLevels.includes(level.id) ? "sel" : ""}`}
-                    onClick={() => toggleAudienceLevel(level.id)}>
-                    <span className="occ-ico"><IcoD name="UserRound" size={18} /></span>
-                    <span className="occ-t">{level.name}</span>
-                    <span className="occ-d">{level.desc}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="def-add-real">
-                <div className="def-add-real-h"><IcoD name="Target" size={13} /> What should this audience care about?</div>
-                <div className="def-panel def-audience-interests">
-                  {(AUDIENCE_INTERESTS[format] || []).map(interest => (
-                    <button key={interest} type="button"
-                      className={`def-chip ${audienceInterests.includes(interest) ? "on" : ""}`}
-                      onClick={() => toggleAudienceInterest(interest)}>
-                      {interest}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Public profiles are optional topic influences, never simulated people. */}
-          <div className="section-label"><span className="ic"><IcoD name="Users" size={13} /></span>
-            6 · Choose public profiles to inform questions <span className="def-optional">optional, up to {MAX_COMMITTEE_SIZE}</span>
-          </div>
-          <div className="def-note" style={{ marginBottom: 10 }}><IcoD name="Globe" size={12} /> Public profiles emphasize topics connected to an academic’s documented work. They do not predict or imitate the person’s actual questions or behavior.</div>
-          {roster.length > 0 && (
-            <div className="def-panel" data-ptour="def-committee">
-              {roster.map(a => {
-                const selected = selectedProfileIds.includes(a.id);
-                const selectionFull = !selected && selectedProfileIds.length >= MAX_COMMITTEE_SIZE;
-                return (
-                <div key={a.id} className={`def-chip def-profile-chip ${selected ? "on" : ""} ${selectionFull ? "selection-full" : ""}`}
-                  style={selected ? { borderColor: a.color } : undefined}>
-                  <input type="checkbox" className="def-profile-check" checked={selected}
-                    onChange={() => toggleProfileSelection(a.id)}
-                    aria-label={`${selected ? "Deselect" : "Select"} ${a.name} for the Defense Room`} />
-                  <button type="button" className="def-profile-link"
-                    title={`Open ${a.name}'s public academic profile`}
-                    onClick={() => openSavedProfile(realMembers.find(m => m.id === a.id))}>
-                    <span className="def-chip-txt">
-                      <span className="def-profile-name">{a.name}</span>
-                      {a.role !== "Committee member" && <span className="def-chip-sub">{a.role}</span>}
-                    </span>
-                  </button>
-                  <button type="button" className="def-mat-x" title="Remove academic profile" aria-label={`Remove ${a.name}`}
-                    onClick={() => removeRealMember(a.id)}>
-                    <IcoD name="X" size={11} />
-                  </button>
-                </div>
-              );})}
-            </div>
-          )}
-          <div className="def-profile-count">
-            <IcoD name="CheckSquare2" size={12} /> {selectedProfileIds.length} of {MAX_COMMITTEE_SIZE} selected for this practice · {realMembers.length} saved profile{realMembers.length === 1 ? "" : "s"}
-          </div>
-
-          <div className="def-add-real">
-            <div className="def-add-real-h"><IcoD name="UserPlus" size={13} /> Add an optional public academic profile</div>
-            <div className="def-add-row">
-              <input className="def-add-input" value={newName} onChange={e => setNewName(e.target.value)}
-                aria-label="Academic name"
-                placeholder="Name, e.g. Dr. Maria Chen" onKeyDown={e => e.key === "Enter" && !resolvingMember && searchRealMember()} />
-              <input className="def-add-input" value={newInstitution} onChange={e => setNewInstitution(e.target.value)}
-                aria-label="Affiliated institution"
-                placeholder="Affiliated institution, e.g. University of Colorado Boulder" onKeyDown={e => e.key === "Enter" && !resolvingMember && searchRealMember()} />
-              <button className="btn sm" onClick={searchRealMember} disabled={!newName.trim() || resolvingMember}>
-                <IcoD name={resolvingMember ? "Loader2" : "Search"} size={13} /> {resolvingMember ? "Searching…" : "Search"}
-              </button>
-            </div>
-            <div className="def-note" style={{ marginTop: 8 }}><IcoD name="Globe" size={12} /> Build a profile based on public academic pages</div>
-          </div>
-
           {picker && (
             <CommitteePicker
               query={pickerQuery}
@@ -2428,26 +2456,10 @@
               viewOnly={!!picker.viewOnly}
             />
           )}
-
-          <div className="def-startrow" data-ptour="def-start">
-            <button className={`composer-btn ${voice ? "on" : ""}`} onClick={() => setVoice(v => !v)} title="Questions are read aloud">
-              <IcoD name={voice ? "Volume2" : "VolumeX"} size={14} /> Read questions aloud: {voice ? "On" : "Off"}
-            </button>
-            <button className="btn primary lg" onClick={isPresent ? startPresent : start}
-              disabled={!hasRequiredQuestioners || !hasRequiredMaterials || deckParsing || parsingMaterials || deck?.status === "failed" || loadingQuestions}>
-              <IcoD name={(deckParsing || parsingMaterials) ? "Loader2" : "Play"} size={15} color="#fff" />
-              {(deckParsing || parsingMaterials)
-                ? "Reading materials..."
-                : isPresent
-                  ? `Practice ${fmt.name.toLowerCase()}${deck ? ` - ${slideCount} slide${slideCount === 1 ? "" : "s"}` : ""}`
-                  : `Start ${followUpQuestionCount} practice question${followUpQuestionCount === 1 ? "" : "s"}`}
-            </button>
-          </div>
-          {!hasRequiredMaterials && <div className="def-note" style={{ marginTop: 8 }}><IcoD name="AlertTriangle" size={12} /> Upload at least one primary material — the practice questions come from your work, not a generic script.</div>}
-          {!hasRequiredQuestioners && <div className="def-note" style={{ marginTop: 8 }}><IcoD name="AlertTriangle" size={12} /> Select at least one audience level or add an academic profile to generate questions.</div>}
         </div>
       );
     }
+
 
     // ==========================================================================
     // PRESENT — present the deck slide-by-slide while recording
